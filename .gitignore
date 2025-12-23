@@ -1,4 +1,7 @@
+# Environment variables
 .env
+.env.*
+!.env.example  # optional: keep a template for dev setup
 node_modules/
-tmp/
 db/
+tmp/

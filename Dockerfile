@@ -8,6 +8,7 @@ ENV ENV_FILE_PATH=/data/.env
 ENV CRON_FILE_PATH=/data/cron.json
 ENV DB_FILE_PATH=/data/patrik.db
 ENV PUBLIC_DATA_FILE_PATH=/data/public
+ENV NODE_ENV=production
 
 # Copy package files and install dependencies
 COPY package*.json ./
@@ -18,6 +19,9 @@ COPY public ./public
 
 # Copy your main server file (index.js)
 COPY index.js .
+
+# Copy source files
+COPY src/ ./src/
 
 COPY cron.js .
 COPY config/ ./config/

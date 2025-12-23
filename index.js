@@ -1,5 +1,4 @@
-// Load environment variables first
-const dotenv = require("dotenv");
+require("./src/config/env");
 
 // Node.js built-in modules
 const fs = require("fs").promises;
@@ -9,7 +8,6 @@ const path = require("path");
 const axios = require("axios");
 const cron = require("node-cron");
 const express = require("express");
-const rateLimit = require("express-rate-limit");
 const { isValidCron } = require("cron-validator");
 const Database = require('better-sqlite3');
 const csv = require('csv-parser');
@@ -19,10 +17,9 @@ const { Readable } = require('stream');
 const { loadCronExpression } = require("./cron");
 const config = require("./config/config.json");
 const { error } = require("console");
+const { productsSync, PRODUCTS_SYNC_PARAMS } = require("./src/services/productSyncService");
 
-// Load .env: use ENV_FILE_PATH if set, otherwise fallback to local .env
-const envFilePath = process.env.ENV_FILE_PATH || "./.env";
-dotenv.config({ path: envFilePath });
+console.log(process.env.WHAT_ENV)
 
 const app = express();
 const PORT = 3000;
@@ -58,9 +55,20 @@ db.prepare(`
   )
 `).run();
 
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS product_sync_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sync_name TEXT,              -- e.g., timestamped JSON file name
+    status TEXT,                 -- "new" or "updated" for this batch
+    source_warehouse TEXT,       -- warehouse name the data came from
+    target_warehouse TEXT,       -- warehouse name the data is synced to
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`).run();
 
 // Holds the warehouse sync cron job instance for later control
 var WAREHOUSE_SYNC_CRON_JOB;
+var PRODUCT_SYNC_CRON_JOB;
 
 // Load initial cron expression (e.g., "*/5 * * * *" → every 5 minutes)
 const initialCronExpression = loadCronExpression();
@@ -189,6 +197,96 @@ app.get("/api/v1/schedules/warehouse-sync", async (req, res) => {
 });
 
 
+app.post("/api/v1/products/sync", authenticate, async (req, res) => {
+    try {
+        const syncResult = await productsSync(...PRODUCTS_SYNC_PARAMS);
+
+        // Save the result to a file and log it in the database
+        const fileTimestamp = getTimestamp();
+        const sourceWarehouse = "T4A"; // System A
+        const targetWarehouse = "CREAGLOBE"; // System B
+        await saveProductSyncFile(syncResult, fileTimestamp, sourceWarehouse, targetWarehouse);
+
+        res.json(syncResult);
+    } catch (err) {
+        res.status(500).json({ error: err.message || "Internal Server Error!" });
+    }
+});
+
+app.get("/api/v1/products/sync/logs", async (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit) || 10;
+        const rows = db.prepare(`
+            SELECT sync_name, status, source_warehouse, target_warehouse, created_at
+            FROM product_sync_log
+            ORDER BY created_at DESC
+            LIMIT ?
+        `).all(limit);
+
+        res.json(rows);
+    } catch (err) {
+        console.error("Error fetching product logs:", err);
+        res.status(500).json({ error: "Internal Server Error!" });
+    }
+});
+
+app.put("/api/v1/schedules/product-sync", authenticate, async (req, res) => {
+    try {
+        const { productSync } = req.body;
+
+        if (!productSync) return res.status(400).json({ error: "productSync (cron expression) is required" });
+        if (!isValidCron(productSync, { seconds: false })) return res.status(400).json({ error: "Invalid cron expression" });
+
+        const cronFilePath = process.env.CRON_FILE_PATH || path.join(__dirname, "cron.json");
+        let currentConfig = {};
+
+        try {
+            const fileContent = await fs.readFile(cronFilePath, "utf8");
+            currentConfig = JSON.parse(fileContent);
+        } catch (err) {
+            if (err.code !== "ENOENT") throw err;
+        }
+
+        currentConfig.productSync = productSync;
+
+        // Apply immediately
+        startOrUpdateProductsCron(productSync);
+
+        await fs.writeFile(cronFilePath, JSON.stringify(currentConfig, null, 2), "utf8");
+
+        res.json({ message: "Product cron expression updated successfully", productSync });
+    } catch (err) {
+        console.error("Error updating cron.json for products:", err);
+        res.status(500).json({ error: "Internal Server Error!" });
+    }
+});
+
+app.get("/api/v1/schedules/product-sync", async (req, res) => {
+    try {
+        const cronFilePath = process.env.CRON_FILE_PATH || path.join(__dirname, "cron.json");
+        let currentConfig = {};
+
+        try {
+            const fileContent = await fs.readFile(cronFilePath, "utf8");
+            currentConfig = JSON.parse(fileContent);
+        } catch (err) {
+            if (err.code !== "ENOENT") throw err;
+        }
+
+        res.json({
+            productSync: currentConfig.productSync || "0 * * * *" // default every hour
+        });
+    } catch (err) {
+        console.error("Error reading cron.json for products:", err);
+        res.status(500).json({ error: "Internal Server Error!" });
+    }
+});
+
+
+
+
+
+
 app.use("/data", express.static(process.env.PUBLIC_DATA_FILE_PATH || "tmp"));
 app.use(express.static("public"));
 
@@ -267,8 +365,8 @@ async function warehousesSync() {
         const combinedStockArray = [
             ...syncSloStockPreparedArray,
             ...syncGerStockPreparedArray
-        ]  
-        console.log("Step 3")      
+        ]
+        console.log("Step 3")
 
         // Step 4: Sync stock to CREAGLOBE warehouse
         const stockSyncResponse = await axios.post(
@@ -341,7 +439,7 @@ async function warehousesSync() {
         //         console.error("Background Google Drive sync failed:", err.message || err);
         //     }
         // })(); // immediately invoked async function
-        return {response: stockSyncResponse.data, data: combinedStockArray};
+        return { response: stockSyncResponse.data, data: combinedStockArray };
 
     } catch (err) {
         console.error("Warehouse Sync failed:", err.message || err);
@@ -367,6 +465,33 @@ function startOrUpdateWarehousesCron(cronExpression) {
 
     console.log("Warehouse sync cron job scheduled:", cronExpression);
 }
+
+function startOrUpdateProductsCron(cronExpression) {
+    // Stop existing job if running
+    if (PRODUCT_SYNC_CRON_JOB) {
+        PRODUCT_SYNC_CRON_JOB.stop();
+        console.log("Stopped existing product sync cron job");
+    }
+
+    // Start new cron job
+    PRODUCT_SYNC_CRON_JOB = cron.schedule(cronExpression, async () => {
+        try {
+            const syncResult = await productsSync(...PRODUCTS_SYNC_PARAMS);
+
+            // Save the result to a file and log it in the database
+            const fileTimestamp = getTimestamp();
+            const sourceWarehouse = "T4A"; // System A
+            const targetWarehouse = "CREAGLOBE"; // System B
+            await saveProductSyncFile(syncResult, fileTimestamp, sourceWarehouse, targetWarehouse);
+
+        } catch (err) {
+            console.error("Scheduled product sync failed:", err.message || err);
+        }
+    });
+
+    console.log("Product sync cron job scheduled:", cronExpression);
+}
+
 
 async function warehousesSyncHeartBeat(success = true, errorMessage = {}) {
     try {
@@ -408,19 +533,49 @@ async function saveSyncFile(dataArray, fileTimestamp, syncName) {
         console.error(`❌ Error saving JSON for ${syncName}:`, err);
     }
 }
+async function saveProductSyncFile(dataArray, fileTimestamp, sourceWarehouse, targetWarehouse, status) {
+    try {
+        const folderPath = process.env.PUBLIC_DATA_FILE_PATH || "./tmp";
+        await fs.mkdir(folderPath, { recursive: true });
+
+        const filePath = path.join(
+            folderPath,
+            `${fileTimestamp}_products_${sourceWarehouse}_to_${targetWarehouse}.json`
+        );
+
+        await fs.writeFile(filePath, JSON.stringify(dataArray, null, 2));
+
+        // Insert a single log row for the whole sync
+        db.prepare(`
+            INSERT INTO product_sync_log 
+            (sync_name, status, source_warehouse, target_warehouse) 
+            VALUES (?, ?, ?, ?)
+        `).run(
+            `${fileTimestamp}_products_${sourceWarehouse}_to_${targetWarehouse}.json`,
+            status,
+            sourceWarehouse,
+            targetWarehouse
+        );
+
+        console.log(`✅ Saved product sync file: ${filePath}`);
+    } catch (err) {
+        console.error(`❌ Error saving product sync for ${sourceWarehouse}:`, err);
+    }
+}
+
 
 function sumByProductCode(data) {
-  return Object.values(
-    data.reduce((acc, item) => {
-      const code = item.product_code;
-      if (!code) return acc; // skip if no code
+    return Object.values(
+        data.reduce((acc, item) => {
+            const code = item.product_code;
+            if (!code) return acc; // skip if no code
 
-      if (!acc[code]) {
-        acc[code] = { ...item, amount: Number(item.amount) };
-      } else {
-        acc[code].amount += Number(item.amount);
-      }
-      return acc;
-    }, {})
-  );
+            if (!acc[code]) {
+                acc[code] = { ...item, amount: Number(item.amount) };
+            } else {
+                acc[code].amount += Number(item.amount);
+            }
+            return acc;
+        }, {})
+    );
 }
