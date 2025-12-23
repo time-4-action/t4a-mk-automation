@@ -4,202 +4,58 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Patrik Warehouse Sync</title>
+  <title>Patrik Products Sync</title>
   <link rel="icon" href="https://www.patrikinternational.com/favicon.ico" type="image/x-icon">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css"
-    crossorigin="anonymous" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" crossorigin="anonymous" />
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-      font-family: 'Orbitron', sans-serif;
-    }
-
-    html,
-    body {
-      height: 100%;
-      background: #121216;
-      color: #eee;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 2rem;
-    }
-
-    .logo-container {
-      text-align: center;
-      margin-bottom: 2rem;
-    }
-
-    .logo-container img {
-      width: 120px;
-      height: auto;
-      margin-bottom: 0.5rem;
-    }
-
-    .logo-container h1 {
-      font-size: 2rem;
-      font-weight: 700;
-      color: #fff;
-      letter-spacing: 1.2px;
-      margin-bottom: 0.3rem;
-    }
-
-    .logo-container p {
-      color: #bbb;
-      font-size: 0.95rem;
-    }
-
-    h3 {
-      margin: 1.5rem 0 0.5rem 0;
-      font-weight: 500;
-      color: #ddd;
-    }
-
-    .grid-container {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.75rem;
-      justify-content: center;
-      margin-bottom: 1rem;
-    }
-
-    .grid-item {
-      background: rgba(40, 40, 50, 0.8);
-      border-radius: 12px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 60px;
-      min-height: 50px;
-      padding: 0.5rem 1rem;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      color: #ccc;
-      user-select: none;
-    }
-
-    .grid-item:hover {
-      transform: scale(1.08);
-      box-shadow: 0 8px 20px rgba(0, 212, 255, 0.25);
-    }
-
-    .grid-item.selected {
-      background: #00d4ff;
-      color: #121216;
-    }
-
-    input,
-    button {
-      font-family: 'Orbitron', sans-serif;
-    }
-
-    input {
-      padding: 0.6rem 1rem;
-      border-radius: 8px;
-      border: none;
-      outline: none;
-      margin: 1rem 0;
-      width: 280px;
-      text-align: center;
-      background: rgba(50, 50, 55, 0.8);
-      color: #fff;
-    }
-
-    button {
-      background: #00d4ff;
-      border: none;
-      padding: 0.6rem 1.2rem;
-      border-radius: 12px;
-      font-weight: 700;
-      cursor: pointer;
-      margin: 0.3rem;
-      color: #121216;
-      transition: 0.2s;
-    }
-
-    button:hover {
-      background: #00a1cc;
-      color: #fff;
-    }
-
-    pre {
-      background: rgba(30, 30, 35, 0.85);
-      padding: 1rem;
-      border-radius: 12px;
-      overflow-x: auto;
-      color: #00d4ff;
-      font-size: 0.9rem;
-      margin-bottom: 2rem;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 1rem;
-      background: rgba(30, 30, 35, 0.85);
-      border-radius: 12px;
-      overflow: hidden;
-    }
-
-    th,
-    td {
-      padding: 0.75rem 1rem;
-      color: #ccc;
-      text-align: left;
-    }
-
-    th {
-      background: rgba(0, 212, 255, 0.15);
-      font-weight: 700;
-    }
-
-    tr:nth-child(even) {
-      background: rgba(255, 255, 255, 0.05);
-    }
-
-    footer {
-      margin-top: auto;
-      font-size: 0.85rem;
-      color: #777;
-      text-align: center;
-    }
-
-    #cronOutput {
-      padding: 0;
-      margin: 0;
-      white-space: pre-wrap;
-    }
+    /* Keep your existing CSS as-is */
+    * { margin:0; padding:0; box-sizing:border-box; font-family: 'Orbitron', sans-serif;}
+    html, body { height:100%; background:#121216; color:#eee; display:flex; flex-direction:column; align-items:center; padding:2rem;}
+    .logo-container { text-align:center; margin-bottom:2rem;}
+    .logo-container img { width:120px; height:auto; margin-bottom:0.5rem;}
+    .logo-container h1 { font-size:2rem; font-weight:700; color:#fff; letter-spacing:1.2px; margin-bottom:0.3rem;}
+    .logo-container p { color:#bbb; font-size:0.95rem;}
+    h3 { margin:1.5rem 0 0.5rem 0; font-weight:500; color:#ddd;}
+    .grid-container { display:flex; flex-wrap:wrap; gap:0.75rem; justify-content:center; margin-bottom:1rem;}
+    .grid-item { background:rgba(40,40,50,0.8); border-radius:12px; display:flex; align-items:center; justify-content:center; min-width:60px; min-height:50px; padding:0.5rem 1rem; font-weight:500; cursor:pointer; transition:all 0.2s ease; color:#ccc; user-select:none;}
+    .grid-item:hover { transform:scale(1.08); box-shadow:0 8px 20px rgba(0,212,255,0.25);}
+    .grid-item.selected { background:#00d4ff; color:#121216;}
+    input, button { font-family: 'Orbitron', sans-serif;}
+    .grid-item.interval[data-value="0"].selected { background: #ff4d4d; color: #fff; }
+    .grid-container.disabled .grid-item { opacity: 0.5; pointer-events: none; }
+    input { padding:0.6rem 1rem; border-radius:8px; border:none; outline:none; margin:1rem 0; width:280px; text-align:center; background:rgba(50,50,55,0.8); color:#fff;}
+    button { background:#00d4ff; border:none; padding:0.6rem 1.2rem; border-radius:12px; font-weight:700; cursor:pointer; margin:0.3rem; color:#121216; transition:0.2s;}
+    button:hover { background:#00a1cc; color:#fff;}
+    pre { background:rgba(30,30,35,0.85); padding:1rem; border-radius:12px; overflow-x:auto; color:#00d4ff; font-size:0.9rem; margin-bottom:2rem;}
+    table { width:100%; border-collapse:collapse; margin-top:1rem; background:rgba(30,30,35,0.85); border-radius:12px; overflow:hidden;}
+    th, td { padding:0.75rem 1rem; color:#ccc; text-align:left;}
+    th { background:rgba(0,212,255,0.15); font-weight:700;}
+    tr:nth-child(even) { background:rgba(255,255,255,0.05);}
+    footer { margin-top:auto; font-size:0.85rem; color:#777; text-align:center;}
+    #cronOutput { padding:0; margin:0; white-space:pre-wrap;}
   </style>
 </head>
 
 <body>
 
   <div class="logo-container">
-    <a href="/">
-      <img
-        src="https://imgs.pnvnet.si/img/615/301/75/2/c/www.patrikinternational.com/assets/page_info/0308183001671536508.png"
-        alt="Time 4 Action Logo">
-    </a>
+    <a href="/"><img src="https://imgs.pnvnet.si/img/615/301/75/2/c/www.patrikinternational.com/assets/page_info/0308183001671536508.png" alt="Time 4 Action Logo"></a>
     <h1>Patrik Products Sync</h1>
-    <p>Syncs Time 4 Action products to Creaglobe (in Metakocka system)</p>
+    <p>Syncs products to Creaglobe (in Metakocka system)</p>
   </div>
 
-
-
   <h3>Select Interval</h3>
-  <div class="grid-container">
+  <div id="intervalGrid" class="grid-container">
     <div class="grid-item interval" data-value="15">Every 15 min</div>
     <div class="grid-item interval" data-value="60">Hourly</div>
     <div class="grid-item interval" data-value="180">Every 3 hours</div>
     <div class="grid-item interval" data-value="1440">Every 24 hours</div>
+    <div class="grid-item interval" data-value="0">Do not run</div>
   </div>
 
   <h3>Select Days</h3>
-  <div class="grid-container">
+  <div id="daysGrid" class="grid-container">
     <div class="grid-item day" data-value="1">Mon</div>
     <div class="grid-item day" data-value="2">Tue</div>
     <div class="grid-item day" data-value="3">Wed</div>
@@ -226,7 +82,7 @@
       <tr>
         <th>Timestamp</th>
         <th>Sync Name</th>
-        <th>Stock Link</th>
+        <th>Products Sync File</th>
       </tr>
     </thead>
     <tbody></tbody>
@@ -235,24 +91,20 @@
   <footer>© 2025 Time 4 Action - AUTOMATION</footer>
 
   <script>
-    // Grid selection setup
+    // Selection logic (same as warehouse version)
     function setupMultiSelection(className) {
       let lastSelectedIndex = null;
       const items = Array.from(document.querySelectorAll(`.${className}`));
-
       items.forEach((item, index) => {
         item.addEventListener('click', (e) => {
           if (e.shiftKey && lastSelectedIndex !== null) {
-            // Select range
             const start = Math.min(lastSelectedIndex, index);
             const end = Math.max(lastSelectedIndex, index);
             for (let i = start; i <= end; i++) items[i].classList.add('selected');
           } else if (e.ctrlKey || e.metaKey) {
-            // Toggle selection for ctrl/cmd click
             item.classList.toggle('selected');
             lastSelectedIndex = index;
           } else {
-            // Normal click: select only this one
             items.forEach(it => it.classList.remove('selected'));
             item.classList.add('selected');
             lastSelectedIndex = index;
@@ -270,62 +122,70 @@
     }
 
     function generateCron() {
-      const interval = parseInt(getSelectedValues('interval', '60'));
+      const interval = parseInt(getSelectedValues('interval', '0')); // Default to 'Do not run'
       const days = getSelectedValues('day', '*');
       let cron = '';
-      if (interval === 15) {
-        cron = '0-59/15 * * * ' + days; // every 15 min starting at 2 past hour
-      } else if (interval === 60) {
-        cron = '0 2-23/1 * * ' + days; // every hour starting at 2 AM
-      } else if (interval === 180) {
-        cron = '0 2-23/3 * * ' + days; // every 3 hours starting at 2 AM
-      } else if (interval === 1440) {
-        cron = '0 2 * * ' + days; // daily at 2:02 AM
-      }
+      if (interval === 15) cron = '0-59/15 * * * ' + days;
+      else if (interval === 60) cron = '0 2-23/1 * * ' + days;
+      else if (interval === 180) cron = '0 2-23/3 * * ' + days;
+      else if (interval === 1440) cron = '0 2 * * ' + days;
+      else if (interval === 0) cron = '-'; // Special value for "Do not run"
       document.getElementById('cronOutput').textContent = cron;
+
+      // Gray out interval if "Do not run" is selected
+      const intervalGridContainer = document.getElementById('intervalGrid');
+      const dayGridContainer = document.getElementById('daysGrid');
+
+      if (interval === 0) {
+        // intervalGridContainer.classList.add('disabled');
+        dayGridContainer.classList.add('disabled');
+        // Also clear all selected days
+        dayGridContainer.querySelectorAll('.day.selected').forEach(el => el.classList.remove('selected'));
+      } else {
+        intervalGridContainer.classList.remove('disabled');
+        dayGridContainer.classList.remove('disabled');
+      }
       return cron;
     }
 
-    // Load current cron
     function loadCronExpression(cron) {
       const intervalItems = document.querySelectorAll('.interval');
-      intervalItems.forEach(item => {
+      intervalItems.forEach(item => { item.classList.remove('selected'); 
         const val = parseInt(item.dataset.value);
-        item.classList.remove('selected');
-
         if (val === 15 && cron.startsWith('0-59/15')) item.classList.add('selected');
         else if (val === 60 && cron.startsWith('0 2-23/1')) item.classList.add('selected');
         else if (val === 180 && cron.startsWith('0 2-23/3')) item.classList.add('selected');
         else if (val === 1440 && cron.startsWith('0 2 ')) item.classList.add('selected');
+        else if (val === 0 && cron === '-') item.classList.add('selected');
       });
-
 
       const dayItems = document.querySelectorAll('.day');
       dayItems.forEach(item => item.classList.remove('selected'));
       const parts = cron.split(' ');
+      if (parts[4] === '*') { // If all days are selected, select all day items
+        dayItems.forEach(item => item.classList.add('selected'));
+        return;
+      }
       if (parts.length >= 5) {
         const days = parts[4].split(',');
-        dayItems.forEach(item => {
-          if (days.includes(item.dataset.value)) item.classList.add('selected');
-        });
+        dayItems.forEach(item => { if (days.includes(item.dataset.value)) item.classList.add('selected'); });
       }
     }
 
-
-    // API calls & buttons
     const API_ENDPOINT = window.location.origin;
 
     document.getElementById('generateCron').addEventListener('click', async () => {
       const cron = generateCron();
       const apiKey = document.getElementById('apiKey').value.trim();
+      if (cron === '-') return alert("Schedule cleared. No cron job will run."); // Handle "Do not run"
       if (!apiKey) return alert("Please enter your API key!");
       try {
-        const res = await fetch(`${API_ENDPOINT}/api/v1/schedules/warehouse-sync`, {
+        const res = await fetch(`${API_ENDPOINT}/api/v1/schedules/product-sync`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
-          body: JSON.stringify({ warehouseSync: cron })
+          body: JSON.stringify({ productSync: cron })
         });
-        if (res.ok) alert('Schedule updated successfully!');
+        if (res.ok) alert('Product schedule updated successfully!');
         else alert('Failed to update schedule: ' + await res.text());
       } catch (err) { console.error(err); alert('Error updating schedule'); }
     });
@@ -334,44 +194,43 @@
       const apiKey = document.getElementById('apiKey').value.trim();
       if (!apiKey) return alert("Please enter your API key!");
       try {
-        alert('Warehouse sync started!');
-        const res = await fetch(`${API_ENDPOINT}/api/v1/warehouse/sync`, {
+        alert('Product sync started!');
+        const res = await fetch(`${API_ENDPOINT}/api/v1/products/sync`, {
           method: 'POST',
           headers: { 'x-api-key': apiKey }
         });
-        if (res.ok) { alert('Warehouse sync completed!'); fetchLatestRuns(); }
+        if (res.ok) { alert('Product sync completed!'); fetchLatestRuns(); }
         else alert('Failed to run sync: ' + await res.text());
       } catch (err) { console.error(err); alert('Error running sync'); }
     });
 
     async function fetchLatestRuns() {
       try {
-        const res = await fetch(`${API_ENDPOINT}/api/v1/warehouse/sync/logs?limit=10`);
+        const res = await fetch(`${API_ENDPOINT}/api/v1/products/sync/logs?limit=10`);
         const data = await res.json();
         const tbody = document.querySelector('#runsTable tbody');
         tbody.innerHTML = '';
         const formatTS = ts => {
           const d = new Date(ts);
-          const pad = n => n.toString().padStart(2, '0');
-          return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} ${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}`;
+          const pad = n => n.toString().padStart(2,'0');
+          return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} ${pad(d.getDate())}.${pad(d.getMonth()+1)}.${d.getFullYear()}`;
         };
         data.forEach(run => {
           const tr = document.createElement('tr');
           tr.innerHTML = `<td>${formatTS(run.created_at)}</td>
-                <td>${run.sync_name || 'warehouse_sync'}</td>
-                <td><a href="/data/${run.link}" target="_blank" class="text-blue-600 underline">View stock list</a></td>`;
+                <td>${run.sync_name || 'product_sync'}</td>
+                <td><a href="/data/${run.sync_name}" target="_blank" class="text-blue-600 underline">View stock list</a></td>`;
           tbody.appendChild(tr);
         });
       } catch (err) { console.error(err); }
     }
 
-    // Load current cron on page load
     async function loadCurrentCron() {
       try {
-        const res = await fetch(`${API_ENDPOINT}/api/v1/schedules/warehouse-sync`);
+        const res = await fetch(`${API_ENDPOINT}/api/v1/schedules/product-sync`);
         if (!res.ok) throw new Error('Failed to fetch cron');
-        const data = await res.json();
-        const currentCron = data.warehouseSync || '* * * * *';
+        const data = await res.json(); // Assuming data.productSync will be '-' if not set
+        const currentCron = data.productSync || '* * * * *';
         loadCronExpression(currentCron);
       } catch (err) { console.error(err); }
     }
@@ -383,10 +242,12 @@
 
     document.getElementById('clearAll').addEventListener('click', () => {
       document.querySelectorAll('.grid-item.selected').forEach(el => el.classList.remove('selected'));
-      document.getElementById('cronOutput').textContent = '*';
+      // Select "Do not run" for interval and all days
+      document.querySelector('.interval[data-value="0"]').classList.add('selected');
+      document.querySelectorAll('.day').forEach(el => el.classList.add('selected'));
+      generateCron(); // Update cron expression to reflect "Do not run" and all days
     });
   </script>
 
 </body>
-
 </html>

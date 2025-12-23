@@ -1,6 +1,6 @@
 {
     "metakocka": {
-        "baseUrl": "https://devmainsi.metakocka.si/rest/eshop",
+        "baseUrl": "https://main.metakocka.si/rest/eshop",
         "warehouseStockPath": "/v1/json/warehouse_stock",
         "syncStockPath": "/sync_stock",
         "productUpdatePath": "/v1/json/product_update",

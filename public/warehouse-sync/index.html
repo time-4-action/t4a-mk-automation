@@ -92,6 +92,16 @@
       color: #121216;
     }
 
+    .grid-item.interval[data-value="0"].selected {
+      background: #ff4d4d;
+      color: #fff;
+    }
+
+    .grid-container.disabled .grid-item {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+
     input,
     button {
       font-family: 'Orbitron', sans-serif;
@@ -191,15 +201,16 @@
 
 
   <h3>Select Interval</h3>
-  <div class="grid-container">
+  <div id="intervalGrid" class="grid-container">
     <div class="grid-item interval" data-value="15">Every 15 min</div>
     <div class="grid-item interval" data-value="60">Hourly</div>
     <div class="grid-item interval" data-value="180">Every 3 hours</div>
     <div class="grid-item interval" data-value="1440">Every 24 hours</div>
+    <div class="grid-item interval" data-value="0">Do not run</div>
   </div>
 
   <h3>Select Days</h3>
-  <div class="grid-container">
+  <div id="daysGrid" class="grid-container">
     <div class="grid-item day" data-value="1">Mon</div>
     <div class="grid-item day" data-value="2">Tue</div>
     <div class="grid-item day" data-value="3">Wed</div>
@@ -270,19 +281,28 @@
     }
 
     function generateCron() {
-      const interval = parseInt(getSelectedValues('interval', '60'));
+      const interval = parseInt(getSelectedValues('interval', '0')); // Default to 'Do not run'
       const days = getSelectedValues('day', '*');
       let cron = '';
-      if (interval === 15) {
-        cron = '0-59/15 * * * ' + days; // every 15 min starting at 2 past hour
-      } else if (interval === 60) {
-        cron = '0 2-23/1 * * ' + days; // every hour starting at 2 AM
-      } else if (interval === 180) {
-        cron = '0 2-23/3 * * ' + days; // every 3 hours starting at 2 AM
-      } else if (interval === 1440) {
-        cron = '0 2 * * ' + days; // daily at 2:02 AM
-      }
+      if (interval === 15) cron = '0-59/15 * * * ' + days;
+      else if (interval === 60) cron = '0 2-23/1 * * ' + days;
+      else if (interval === 180) cron = '0 2-23/3 * * ' + days;
+      else if (interval === 1440) cron = '0 2 * * ' + days;
+      else if (interval === 0) cron = '-'; // Special value for "Do not run"
       document.getElementById('cronOutput').textContent = cron;
+
+      // Gray out interval if "Do not run" is selected
+      const intervalGridContainer = document.getElementById('intervalGrid');
+      const dayGridContainer = document.getElementById('daysGrid');
+
+      if (interval === 0) {
+        dayGridContainer.classList.add('disabled');
+        // Also clear all selected days
+        dayGridContainer.querySelectorAll('.day.selected').forEach(el => el.classList.remove('selected'));
+      } else {
+        intervalGridContainer.classList.remove('disabled');
+        dayGridContainer.classList.remove('disabled');
+      }
       return cron;
     }
 
@@ -297,11 +317,16 @@
         else if (val === 60 && cron.startsWith('0 2-23/1')) item.classList.add('selected');
         else if (val === 180 && cron.startsWith('0 2-23/3')) item.classList.add('selected');
         else if (val === 1440 && cron.startsWith('0 2 ')) item.classList.add('selected');
+        else if (val === 0 && cron === '-') item.classList.add('selected');
       });
 
 
       const dayItems = document.querySelectorAll('.day');
       dayItems.forEach(item => item.classList.remove('selected'));
+      if (cron === '-') {
+        generateCron(); // This will disable the days grid
+        return;
+      }
       const parts = cron.split(' ');
       if (parts.length >= 5) {
         const days = parts[4].split(',');
@@ -318,6 +343,7 @@
     document.getElementById('generateCron').addEventListener('click', async () => {
       const cron = generateCron();
       const apiKey = document.getElementById('apiKey').value.trim();
+      if (cron === '-') return alert("Schedule cleared. No cron job will run."); // Handle "Do not run"
       if (!apiKey) return alert("Please enter your API key!");
       try {
         const res = await fetch(`${API_ENDPOINT}/api/v1/schedules/warehouse-sync`, {
@@ -383,7 +409,9 @@
 
     document.getElementById('clearAll').addEventListener('click', () => {
       document.querySelectorAll('.grid-item.selected').forEach(el => el.classList.remove('selected'));
-      document.getElementById('cronOutput').textContent = '*';
+      document.querySelector('.interval[data-value="0"]').classList.add('selected');
+      document.querySelectorAll('.day').forEach(el => el.classList.add('selected'));
+      generateCron();
     });
   </script>
 

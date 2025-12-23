@@ -1,18 +1,18 @@
-// Load environment variables first
-const dotenv = require("dotenv");
 const axios = require("axios");
 const path = require("path")
 const fs = require("fs");
-
-// Local modules
 const config = require("../../config/config.json");
-const {sendSyncReport} = require("./emailSender")
 
-// Load .env: use ENV_FILE_PATH if set, otherwise fallback to local .env
-const envFilePath = process.env.ENV_FILE_PATH || "../../.env";
-dotenv.config({ path: envFilePath });
+const COMPANY_ID_TO_NAME = {
+    [process.env.MK_COMPANY_ID_T4A]: 'T4A',
+    [process.env.MK_COMPANY_ID_CREAGLOBE]: 'CREAGLOBE'
+};
 
-// --- Helpers ---
+/**
+ * Parses a value to a number, handling comma as a decimal separator if the value is a string.
+ * @param {string|number} value - The value to parse.
+ * @returns {number} The parsed number.
+ */
 function parseNumber(value) {
     if (typeof value === 'string') {
         return Number(value.replace(',', '.'));
@@ -20,19 +20,23 @@ function parseNumber(value) {
     return value; // already number
 }
 
-// Flatten categories helper
+/**
+ * Flattens a nested category tree structure into a flat array of category paths.
+ * @param {Array<Object>} categoryTree - The array of category tree nodes.
+ * @returns {Array<Object>|undefined} An array of objects, where each object has a 'category' key containing an array representing the category path, or undefined if the input is not an array.
+ */
 function flattenCategories(categoryTree) {
     if (!Array.isArray(categoryTree)) return undefined; // guard
 
     const result = [];
 
     function traverse(node, path = []) {
-        if (!node || !node.tree_node_label) return; // skip invalid nodes
+        if (!node || !node.tree_node_label) return;
 
         const newPath = [...path, node.tree_node_label];
 
-        if (!node.tree_node_list || !Array.isArray(node.tree_node_list) || node.tree_node_list.length === 0) {
-            result.push({ category: newPath.length === 1 ? newPath[0] : newPath });
+        if (!node.tree_node_list || !Array.isArray(node.tree_node_list) || node.tree_node_list.length === 0) { // If no children, it's a leaf node
+            result.push({ category: newPath }); // <-- always array now
         } else {
             node.tree_node_list.forEach(child => traverse(child, newPath));
         }
@@ -42,7 +46,11 @@ function flattenCategories(categoryTree) {
     return result;
 }
 
-// Format product list
+/**
+ * Formats a list of raw product objects into a standardized format.
+ * @param {Array<Object>} list - The raw list of product objects.
+ * @returns {Array<Object>} The formatted list of product objects.
+ */
 function formatProductList(list) {
     return list.map((p) =>
         Object.fromEntries(
@@ -78,6 +86,12 @@ function formatProductList(list) {
     );
 }
 
+/**
+ * Performs a deep comparison of two values, ignoring case for strings and order for array elements.
+ * @param {*} a - The first value to compare.
+ * @param {*} b - The second value to compare.
+ * @returns {boolean} True if the values are deeply equal (case-insensitive for strings, order-agnostic for arrays), false otherwise.
+ */
 function deepEqualIgnoreCaseUnordered(a, b) {
   if (typeof a === 'string' && typeof b === 'string') {
     return a.toLowerCase() === b.toLowerCase();
@@ -100,8 +114,17 @@ function deepEqualIgnoreCaseUnordered(a, b) {
   return a === b;
 }
 
-// systemA is one that is treated as main --> it wins always
-function generateSmartMerge(systemA, systemB, outputDir = './delta') {
+/**
+ * Generates a smart merge delta between two product systems (systemA and systemB).
+ * SystemA is considered the main system, and its values win in conflicts.
+ * @param {Array<Object>} systemA - The product list from system A.
+ * @param {Array<Object>} systemB - The product list from system B.
+ * @param {string} nameA - The identifier for system A.
+ * @param {string} nameB - The identifier for system B.
+ * @param {string} [outputDir='./delta'] - The directory to save the delta files.
+ * @returns {{changesA: Array<Object>, changesB: Array<Object>, newInA: Array<Object>, newInB: Array<Object>}} An object containing arrays of changes for each system and new products.
+ */
+function generateSmartMerge(systemA, systemB, nameA, nameB, outputDir = './delta') {
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
     const mapA = Object.fromEntries(systemA.map(p => [p.code, p]));
@@ -116,7 +139,7 @@ function generateSmartMerge(systemA, systemB, outputDir = './delta') {
         const bProduct = mapB[aProduct.code];
 
         if (!bProduct) {
-            // Product only in A → add to B
+            // Product exists only in System A, so it's new for System B
             newInB.push({ ...aProduct });
             continue;
         }
@@ -124,7 +147,7 @@ function generateSmartMerge(systemA, systemB, outputDir = './delta') {
         const bUpdate = {};
         const aUpdate = {};
 
-        for (const key of new Set([...Object.keys(aProduct), ...Object.keys(bProduct)])) {
+        for (const key of new Set([...Object.keys(aProduct), ...Object.keys(bProduct)])) { // Iterate over all unique keys from both products
             if (key === 'count_code' || key === "sales" || key ==="service" || key === "purchasing" || key === "code") continue;
             
             const aValue = aProduct[key];
@@ -136,16 +159,16 @@ function generateSmartMerge(systemA, systemB, outputDir = './delta') {
             const equal = deepEqualIgnoreCaseUnordered(aValue, bValue);
 
             if (key === "categories" && !equal) {
-                console.log(aValue, bValue, equal)
+                // console.log(aValue, bValue, equal)
             }
 
             if (!equal) {
                 if (aValue !== undefined && bValue !== undefined) {
-                    bUpdate[key] = aValue; // A wins
+                    bUpdate[key] = aValue; // Conflict: System A's value wins, so B needs to update
                 } else if (aValue === undefined && bValue !== undefined) {
-                    aUpdate[key] = bValue; // Only B → add to A
+                    aUpdate[key] = bValue; // Value exists only in B, so A can adopt it
                 } else if (aValue !== undefined && bValue === undefined) {
-                    bUpdate[key] = aValue; // Only A → add to B
+                    bUpdate[key] = aValue; // Value exists only in A, so B needs to adopt it
                 }
             }
         }
@@ -168,7 +191,7 @@ function generateSmartMerge(systemA, systemB, outputDir = './delta') {
                 count_code: aProduct.count_code,
                 sales: aProduct.sales,
                 service: aProduct.service,
-                purchasing: bProduct.purchasing, // double-check if this should be aProduct.purchase
+                purchasing: bProduct.purchasing, 
                 code: aProduct.code
             });
         }
@@ -190,18 +213,25 @@ function generateSmartMerge(systemA, systemB, outputDir = './delta') {
         }
     }
 
-    fs.writeFileSync(`${outputDir}/changesA.json`, JSON.stringify(changesA, null, 2));
-    fs.writeFileSync(`${outputDir}/changesB.json`, JSON.stringify(changesB, null, 2));
-    fs.writeFileSync(`${outputDir}/newInA.json`, JSON.stringify(newInA, null, 2));
-    fs.writeFileSync(`${outputDir}/newInB.json`, JSON.stringify(newInB, null, 2));
+    // fs.writeFileSync(`${outputDir}/changes${nameA}.json`, JSON.stringify(changesA, null, 2));
+    // fs.writeFileSync(`${outputDir}/changes${nameB}.json`, JSON.stringify(changesB, null, 2));
+    // fs.writeFileSync(`${outputDir}/newIn${nameA}.json`, JSON.stringify(newInA, null, 2));
+    // fs.writeFileSync(`${outputDir}/newIn${nameB}.json`, JSON.stringify(newInB, null, 2));
 
-    console.log('✅ Smart merged delta files created in', outputDir);
+    // console.log('✅ Smart merged delta files created in', outputDir);
 
     return { changesA, changesB, newInA, newInB };
 }
 
-// Update products in Metakocka
-async function updateProducts(updates, secret_key, company_id) {
+/**
+ * Updates products in Metakocka.
+ * @param {Array<Object>} updates - An array of product objects to update.
+ * @param {string} secret_key - The Metakocka secret key.
+ * @param {string} company_id - The Metakocka company ID.
+ * @returns {Array<Object>} An array of error codes or objects if any updates failed.
+ * @param {string} systemIdentifier - A string to identify the system (e.g., 'System A').
+ */
+async function updateProducts(updates, secret_key, company_id, systemIdentifier) {
     const url = `${config.metakocka.baseUrl}${config.metakocka.productUpdatePath}`;
     const error_codes = [];
 
@@ -218,15 +248,21 @@ async function updateProducts(updates, secret_key, company_id) {
                     headers: { "Content-Type": "application/json" }
                 }
             );
+            // console.log(res.dat
+            // a)
 
             if (res.data.opr_code !== "0") {
                 error_codes.push({
+                    system: systemIdentifier,
+                    product_code: update.code,
+                    action: 'update',
                     opr_desc_app: res.data.opr_desc_app,
                     opr_desc: res.data.opr_desc
                 });
             }
         } catch (err) {
             error_codes.push({
+                system: systemIdentifier,
                 update,
                 error: err.response?.data || err.message
             });
@@ -236,7 +272,15 @@ async function updateProducts(updates, secret_key, company_id) {
     return error_codes;
 }
 
-async function addProducts(products, secret_key, company_id) {
+/**
+ * Adds new products to Metakocka.
+ * @param {Array<Object>} products - An array of product objects to add.
+ * @param {string} secret_key - The Metakocka secret key.
+ * @param {string} company_id - The Metakocka company ID.
+ * @returns {Array<Object>} An array of error codes or objects if any products failed to add.
+ * @param {string} systemIdentifier - A string to identify the system (e.g., 'System A').
+ */
+async function addProducts(products, secret_key, company_id, systemIdentifier) {
     const url = `${config.metakocka.baseUrl}${config.metakocka.productAddPath}`;
     const error_codes = [];
 
@@ -256,12 +300,16 @@ async function addProducts(products, secret_key, company_id) {
 
             if (res.data.opr_code !== "0") {
                 error_codes.push({
+                    system: systemIdentifier,
+                    product_code: product.code,
+                    action: 'add',
                     opr_desc_app: res.data.opr_desc_app,
                     opr_desc: res.data.opr_desc
                 });
             }
         } catch (err) {
             error_codes.push({
+                system: systemIdentifier,
                 product,
                 error: err.response?.data || err.message
             });
@@ -271,6 +319,12 @@ async function addProducts(products, secret_key, company_id) {
     return error_codes;
 }
 
+/**
+ * Lists all products from Metakocka, handling pagination.
+ * @param {string} secret_key - The Metakocka secret key.
+ * @param {string} company_id - The Metakocka company ID.
+ * @returns {Array<Object>} An array of product objects.
+ */
 async function listProducts(secret_key, company_id) {
     var productList = [];
     var offset = 0;
@@ -295,7 +349,8 @@ async function listProducts(secret_key, company_id) {
                 }
             }
         );
-
+        // console.log({...baseRequestData})
+        console.log(productListResponse.data)
         productList.push(...productListResponse.data.product_list)
         
         offset += 1000;
@@ -308,66 +363,67 @@ async function listProducts(secret_key, company_id) {
 
 }
 
-async function syncProducts(systemAKey, systemACompany, systemBKey, systemBCompany) {
-    const companyNames = {
-        4430: "Creaglobe",
-        6267: "Time 4 Action"
-    }
+/**
+ * Synchronizes products between two Metakocka systems.
+ * @param {string} systemAKey - Secret key for system A (main system).
+ * @param {string} systemACompany - Company ID for system A.
+ * @param {string} systemBKey - Secret key for system B.
+ * @param {string} systemBCompany - Company ID for system B.
+ */
+async function productsSync(systemAKey, systemACompany, systemBKey, systemBCompany) {
+    try {
+        // console.log("Starting product synchronization...");
 
-    const productsA = await listProducts(systemAKey, systemACompany);
-    const productsB = await listProducts(systemBKey, systemBCompany);
+        const [productsA, productsB] = await Promise.all([
+            listProducts(systemAKey, systemACompany),
+            listProducts(systemBKey, systemBCompany)
+        ]);
+        // console.log(`Found ${productsA.length} products in System A and ${productsB.length} in System B.`);
 
-    const productsAFormated = formatProductList(productsA);
-    const productsBFormated = formatProductList(productsB);
+        const productsAFormated = formatProductList(productsA);
+        const productsBFormated = formatProductList(productsB);
 
-    const smartMerge = generateSmartMerge(productsAFormated, productsBFormated);
+        const nameA = COMPANY_ID_TO_NAME[systemACompany] || 'SystemA';
+        const nameB = COMPANY_ID_TO_NAME[systemBCompany] || 'SystemB';
 
-    const changesA = smartMerge.changesA;
-    const changesB = smartMerge.changesB;
-    const newInA = smartMerge.newInA;
-    const newInB = smartMerge.newInB;
+        const { changesA, changesB, newInA, newInB } = generateSmartMerge(productsAFormated, productsBFormated, nameA, nameB);
 
-    const updateAErrorCodes = await updateProducts(changesA, systemAKey, systemACompany);
-    const updateBErrorCodes = await updateProducts(changesB, systemBKey, systemBCompany);
+        const [updateAErrorCodes, updateBErrorCodes, addProductsAErrorCodes, addProductsBErrorCodes] = await Promise.all([
+            updateProducts(changesA, systemAKey, systemACompany, nameA),
+            updateProducts(changesB, systemBKey, systemBCompany, nameB),
+            addProducts(newInA, systemAKey, systemACompany, nameA),
+            addProducts(newInB, systemBKey, systemBCompany, nameB)
+        ]);
 
-    const addProductsAErrorCodes = await addProducts(newInA, systemAKey, systemACompany);
-    const addProductsBErrorCodes = await addProducts(newInB, systemBKey, systemBCompany);
+        const allErrors = [...updateAErrorCodes, ...updateBErrorCodes, ...addProductsAErrorCodes, ...addProductsBErrorCodes];
 
-    // Correct email mapping: from → to based on data flow
-    const emailTasks = [
-        { errors: updateAErrorCodes, from: systemACompany, to: systemBCompany, notes: ['Product updates attempt'] },
-        { errors: updateBErrorCodes, from: systemBCompany, to: systemACompany, notes: ['Product updates attempt'] },
-        { errors: addProductsAErrorCodes, from: systemACompany, to: systemBCompany, notes: ['Adding new products'] },
-        { errors: addProductsBErrorCodes, from: systemBCompany, to: systemACompany, notes: ['Adding new products'] },
-    ];
-
-    for (const task of emailTasks) {
-        if (task.errors && task.errors.length > 0) {
-            await sendSyncReport({
-                toEmail: 'k2.gregar@gmail.com',
-                fromSystem: companyNames[task.from],
-                toSystem: companyNames[task.to],
-                errors: task.errors,
-                successes: [],
-                notes: task.notes
-            });
+        if (allErrors.length > 0) {
+            console.error("Synchronization completed with errors:", allErrors);
+        } else {
+            // console.log("Synchronization completed successfully.");
         }
-    }
 
-    console.log('All relevant error emails sent.');
+        // Here you could use the sendSyncReport function with the results
+        // await sendSyncReport({ errors: allErrors, changesA, changesB, newInA, newInB });
+
+        return {
+            success: allErrors.length === 0,
+            errors: allErrors,
+            [`changes${nameA}`]: changesA,
+            [`changes${nameB}`]: changesB,
+            [`newIn${nameA}`]: newInA,
+            [`newIn${nameB}`]: newInB
+        };
+    } catch (error) {
+        console.error("A critical error occurred during synchronization:", error);
+        // await sendSyncReport({ criticalError: error.message || error });
+        throw error; // Re-throw the error to be handled by the caller
+    }
 }
 
-// === TEST ===
-// const creaglobeFormatted = formatProductList(creaglobe_product_list);
-// const t4aFormatted = formatProductList(t4a_product_list); // simulate identical data
+const PRODUCTS_SYNC_PARAMS = [process.env.MK_SECRET_KEY_T4A, process.env.MK_COMPANY_ID_T4A, process.env.MK_SECRET_KEY_CREAGLOBE, process.env.MK_COMPANY_ID_CREAGLOBE]
 
-
-// var smartMerge = generateSmartMerge(creaglobeFormatted, t4aFormatted);
-
-syncProducts(process.env.MK_SECRET_KEY_CREAGLOBE, process.env.MK_COMPANY_ID_CREAGLOBE, process.env.MK_SECRET_KEY_T4A, process.env.MK_COMPANY_ID_T4A)
-
-
-
-// updateProducts(smartMerge.changesA, process.env.MK_SECRET_KEY_CREAGLOBE, process.env.MK_COMPANY_ID_CREAGLOBE)
-// updateProducts(smartMerge.changesB, process.env.MK_SECRET_KEY_T4A, process.env.MK_COMPANY_ID_T4A)
-
+module.exports = {
+    productsSync,
+    PRODUCTS_SYNC_PARAMS
+};
