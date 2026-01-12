@@ -7,40 +7,192 @@
   <title>Patrik Products Sync</title>
   <link rel="icon" href="https://www.patrikinternational.com/favicon.ico" type="image/x-icon">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" crossorigin="anonymous" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css"
+    crossorigin="anonymous" />
   <style>
     /* Keep your existing CSS as-is */
-    * { margin:0; padding:0; box-sizing:border-box; font-family: 'Orbitron', sans-serif;}
-    html, body { height:100%; background:#121216; color:#eee; display:flex; flex-direction:column; align-items:center; padding:2rem;}
-    .logo-container { text-align:center; margin-bottom:2rem;}
-    .logo-container img { width:120px; height:auto; margin-bottom:0.5rem;}
-    .logo-container h1 { font-size:2rem; font-weight:700; color:#fff; letter-spacing:1.2px; margin-bottom:0.3rem;}
-    .logo-container p { color:#bbb; font-size:0.95rem;}
-    h3 { margin:1.5rem 0 0.5rem 0; font-weight:500; color:#ddd;}
-    .grid-container { display:flex; flex-wrap:wrap; gap:0.75rem; justify-content:center; margin-bottom:1rem;}
-    .grid-item { background:rgba(40,40,50,0.8); border-radius:12px; display:flex; align-items:center; justify-content:center; min-width:60px; min-height:50px; padding:0.5rem 1rem; font-weight:500; cursor:pointer; transition:all 0.2s ease; color:#ccc; user-select:none;}
-    .grid-item:hover { transform:scale(1.08); box-shadow:0 8px 20px rgba(0,212,255,0.25);}
-    .grid-item.selected { background:#00d4ff; color:#121216;}
-    input, button { font-family: 'Orbitron', sans-serif;}
-    .grid-item.interval[data-value="0"].selected { background: #ff4d4d; color: #fff; }
-    .grid-container.disabled .grid-item { opacity: 0.5; pointer-events: none; }
-    input { padding:0.6rem 1rem; border-radius:8px; border:none; outline:none; margin:1rem 0; width:280px; text-align:center; background:rgba(50,50,55,0.8); color:#fff;}
-    button { background:#00d4ff; border:none; padding:0.6rem 1.2rem; border-radius:12px; font-weight:700; cursor:pointer; margin:0.3rem; color:#121216; transition:0.2s;}
-    button:hover { background:#00a1cc; color:#fff;}
-    pre { background:rgba(30,30,35,0.85); padding:1rem; border-radius:12px; overflow-x:auto; color:#00d4ff; font-size:0.9rem; margin-bottom:2rem;}
-    table { width:100%; border-collapse:collapse; margin-top:1rem; background:rgba(30,30,35,0.85); border-radius:12px; overflow:hidden;}
-    th, td { padding:0.75rem 1rem; color:#ccc; text-align:left;}
-    th { background:rgba(0,212,255,0.15); font-weight:700;}
-    tr:nth-child(even) { background:rgba(255,255,255,0.05);}
-    footer { margin-top:auto; font-size:0.85rem; color:#777; text-align:center;}
-    #cronOutput { padding:0; margin:0; white-space:pre-wrap;}
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: 'Orbitron', sans-serif;
+    }
+
+    html,
+    body {
+      height: 100%;
+      background: #121216;
+      color: #eee;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+    }
+
+    .logo-container {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+
+    .logo-container img {
+      width: 120px;
+      height: auto;
+      margin-bottom: 0.5rem;
+    }
+
+    .logo-container h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: 1.2px;
+      margin-bottom: 0.3rem;
+    }
+
+    .logo-container p {
+      color: #bbb;
+      font-size: 0.95rem;
+    }
+
+    h3 {
+      margin: 1.5rem 0 0.5rem 0;
+      font-weight: 500;
+      color: #ddd;
+    }
+
+    .grid-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      justify-content: center;
+      margin-bottom: 1rem;
+    }
+
+    .grid-item {
+      background: rgba(40, 40, 50, 0.8);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 60px;
+      min-height: 50px;
+      padding: 0.5rem 1rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      color: #ccc;
+      user-select: none;
+    }
+
+    .grid-item:hover {
+      transform: scale(1.08);
+      box-shadow: 0 8px 20px rgba(0, 212, 255, 0.25);
+    }
+
+    .grid-item.selected {
+      background: #00d4ff;
+      color: #121216;
+    }
+
+    input,
+    button {
+      font-family: 'Orbitron', sans-serif;
+    }
+
+    .grid-item.interval[data-value="0"].selected {
+      background: #ff4d4d;
+      color: #fff;
+    }
+
+    .grid-container.disabled .grid-item {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+
+    input {
+      padding: 0.6rem 1rem;
+      border-radius: 8px;
+      border: none;
+      outline: none;
+      margin: 1rem 0;
+      width: 280px;
+      text-align: center;
+      background: rgba(50, 50, 55, 0.8);
+      color: #fff;
+    }
+
+    button {
+      background: #00d4ff;
+      border: none;
+      padding: 0.6rem 1.2rem;
+      border-radius: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      margin: 0.3rem;
+      color: #121216;
+      transition: 0.2s;
+    }
+
+    button:hover {
+      background: #00a1cc;
+      color: #fff;
+    }
+
+    pre {
+      background: rgba(30, 30, 35, 0.85);
+      padding: 1rem;
+      border-radius: 12px;
+      overflow-x: auto;
+      color: #00d4ff;
+      font-size: 0.9rem;
+      margin-bottom: 2rem;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+      background: rgba(30, 30, 35, 0.85);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    th,
+    td {
+      padding: 0.75rem 1rem;
+      color: #ccc;
+      text-align: left;
+    }
+
+    th {
+      background: rgba(0, 212, 255, 0.15);
+      font-weight: 700;
+    }
+
+    tr:nth-child(even) {
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    footer {
+      margin-top: auto;
+      font-size: 0.85rem;
+      color: #777;
+      text-align: center;
+    }
+
+    #cronOutput {
+      padding: 0;
+      margin: 0;
+      white-space: pre-wrap;
+    }
   </style>
 </head>
 
 <body>
 
   <div class="logo-container">
-    <a href="/"><img src="https://imgs.pnvnet.si/img/615/301/75/2/c/www.patrikinternational.com/assets/page_info/0308183001671536508.png" alt="Time 4 Action Logo"></a>
+    <a href="/"><img
+        src="https://imgs.pnvnet.si/img/615/301/75/2/c/www.patrikinternational.com/assets/page_info/0308183001671536508.png"
+        alt="Time 4 Action Logo"></a>
     <h1>Patrik Products Sync</h1>
     <p>Syncs products to Creaglobe (in Metakocka system)</p>
   </div>
@@ -150,7 +302,8 @@
 
     function loadCronExpression(cron) {
       const intervalItems = document.querySelectorAll('.interval');
-      intervalItems.forEach(item => { item.classList.remove('selected'); 
+      intervalItems.forEach(item => {
+        item.classList.remove('selected');
         const val = parseInt(item.dataset.value);
         if (val === 15 && cron.startsWith('0-59/15')) item.classList.add('selected');
         else if (val === 60 && cron.startsWith('0 2-23/1')) item.classList.add('selected');
@@ -212,14 +365,14 @@
         tbody.innerHTML = '';
         const formatTS = ts => {
           const d = new Date(ts);
-          const pad = n => n.toString().padStart(2,'0');
-          return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} ${pad(d.getDate())}.${pad(d.getMonth()+1)}.${d.getFullYear()}`;
+          const pad = n => n.toString().padStart(2, '0');
+          return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} ${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}`;
         };
         data.forEach(run => {
           const tr = document.createElement('tr');
           tr.innerHTML = `<td>${formatTS(run.created_at)}</td>
                 <td>${run.sync_name || 'product_sync'}</td>
-                <td><a href="/data/${run.sync_name}" target="_blank" class="text-blue-600 underline">View stock list</a></td>`;
+                <td><a href="/data/${run.sync_name}" target="_blank" class="text-[rgba(0,212,255,0.15)] underline">View sync</a></td>`;
           tbody.appendChild(tr);
         });
       } catch (err) { console.error(err); }
@@ -250,4 +403,5 @@
   </script>
 
 </body>
+
 </html>
