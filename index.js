@@ -97,6 +97,12 @@ const initialCronExpression = loadCronExpression();
 // Start or update the warehouse sync job with the loaded schedule
 startOrUpdateWarehousesCron(initialCronExpression);
 
+// Start the product sync job too. Without this it was only ever scheduled when the
+// PUT /api/v1/schedules/product-sync endpoint was hit, so on a plain restart the
+// product sync never ran on its cron schedule. Fall back to hourly if the key is absent.
+const initialProductCronExpression = loadCronExpression("productSync") || "0 * * * *";
+startOrUpdateProductsCron(initialProductCronExpression);
+
 // API key from environment for route authentication
 const API_KEY = process.env.API_KEY;
 
