@@ -336,7 +336,12 @@ async function warehousesSync() {
         let sloWhStockArray = warehouseStockResponse.data.stock_list;
         let syncSloStockPreparedArray = sloWhStockArray.map(item => ({
             product_code: item.code,
-            amount: item.amount,
+            // Free (available-to-sell) stock: Metakocka returns `free_amount` (= amount - reserved)
+            // only when reservations are in use; otherwise fall back to amount - reserved_amount
+            // (reserved defaults to 0, reducing to `amount`). Avoids syncing reserved units as available.
+            amount: item.free_amount != null && item.free_amount !== ''
+                ? Number(item.free_amount)
+                : Number(item.amount || 0) - Number(item.reserved_amount || 0),
             warehouse_id: process.env.MK_CREAGLOBE_WAREHOUSE_ID_T4A
         }));
 
