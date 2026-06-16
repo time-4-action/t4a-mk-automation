@@ -9,6 +9,7 @@ const axios = require("axios");
 const cron = require("node-cron");
 const express = require("express");
 const { isValidCron } = require("cron-validator");
+const { CronExpressionParser } = require("cron-parser");
 const Database = require('better-sqlite3');
 const csv = require('csv-parser');
 const { Readable } = require('stream');
@@ -66,6 +67,23 @@ db.prepare(`
   )
 `).run();
 
+// Unified run history for the admin "Automation" page: one row per warehouse/product
+// sync (scheduled or manual) with its outcome, duration and item count. node-cron exposes
+// no last-run/next-run info, so we track it ourselves here.
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS sync_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT,                   -- 'warehouse' | 'products'
+    trigger TEXT,                -- 'manual' | 'schedule'
+    status TEXT,                 -- 'running' | 'ok' | 'error'
+    item_count INTEGER,
+    error TEXT,
+    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    finished_at DATETIME,
+    duration_ms INTEGER
+  )
+`).run();
+
 // Holds the warehouse sync cron job instance for later control
 var WAREHOUSE_SYNC_CRON_JOB;
 var PRODUCT_SYNC_CRON_JOB;
@@ -94,18 +112,14 @@ app.get("/api/v1/uptime", (req, res) => {
     res.json({ success: true });
 });
 
-// POST endpoint to trigger warehouse data sync
-app.post("/api/v1/warehouse/sync", authenticate, async (req, res) => {
-    try {
-        // Perform the warehouse sync
-        const result = await warehousesSync();
-
-        // Return sync result as JSON
-        res.json(result);
-    } catch (err) {
-        // Handle errors and respond with status 500
-        res.status(500).json({ error: err.message || "Internal Server Error!" });
+// POST endpoint to trigger warehouse data sync. Runs in the background and records the
+// outcome in sync_runs; responds 202 immediately (or 409 if a sync is already running).
+app.post("/api/v1/warehouse/sync", authenticate, (req, res) => {
+    const r = runWarehouseSync("manual");
+    if (!r.started) {
+        return res.status(409).json({ error: "A warehouse sync is already running." });
     }
+    res.status(202).json({ started: true, runId: r.runId, startedAt: new Date().toISOString() });
 });
 
 app.get("/api/v1/warehouse/sync/logs", async (req, res) => {
@@ -197,20 +211,13 @@ app.get("/api/v1/schedules/warehouse-sync", async (req, res) => {
 });
 
 
-app.post("/api/v1/products/sync", authenticate, async (req, res) => {
-    try {
-        const syncResult = await productsSync(...PRODUCTS_SYNC_PARAMS);
-
-        // Save the result to a file and log it in the database
-        const fileTimestamp = getTimestamp();
-        const sourceWarehouse = "T4A"; // System A
-        const targetWarehouse = "CREAGLOBE"; // System B
-        await saveProductSyncFile(syncResult, fileTimestamp, sourceWarehouse, targetWarehouse);
-
-        res.json(syncResult);
-    } catch (err) {
-        res.status(500).json({ error: err.message || "Internal Server Error!" });
+// POST endpoint to trigger product sync. Background + recorded; 202 (or 409 if running).
+app.post("/api/v1/products/sync", authenticate, (req, res) => {
+    const r = runProductSync("manual");
+    if (!r.started) {
+        return res.status(409).json({ error: "A product sync is already running." });
     }
+    res.status(202).json({ started: true, runId: r.runId, startedAt: new Date().toISOString() });
 });
 
 app.get("/api/v1/products/sync/logs", async (req, res) => {
@@ -282,6 +289,48 @@ app.get("/api/v1/schedules/product-sync", async (req, res) => {
     }
 });
 
+// Unified status for the admin "Automation" page: both schedules, their next fire time,
+// whether a sync is currently running, and the last recorded run for each.
+app.get("/api/v1/status", authenticate, (req, res) => {
+    try {
+        const cfg = readCronConfig();
+        const warehouseCron = cfg.warehouseSync || loadCronExpression("warehouseSync");
+        const productCron = cfg.productSync || "0 * * * *";
+        res.json({
+            warehouse: {
+                schedule: warehouseCron,
+                nextRun: nextRunOf(warehouseCron),
+                isRunning: WAREHOUSE_RUNNING,
+                lastRun: lastRunOf("warehouse")
+            },
+            products: {
+                schedule: productCron,
+                nextRun: nextRunOf(productCron),
+                isRunning: PRODUCT_RUNNING,
+                lastRun: lastRunOf("products")
+            }
+        });
+    } catch (err) {
+        console.error("Error building status:", err);
+        res.status(500).json({ error: "Internal Server Error!" });
+    }
+});
+
+// Recent run history. Optional ?type=warehouse|products and ?limit= (max 100).
+app.get("/api/v1/runs", authenticate, (req, res) => {
+    try {
+        const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+        const type = req.query.type;
+        const rows = type
+            ? db.prepare(`SELECT * FROM sync_runs WHERE type = ? ORDER BY id DESC LIMIT ?`).all(type, limit)
+            : db.prepare(`SELECT * FROM sync_runs ORDER BY id DESC LIMIT ?`).all(limit);
+        res.json(rows);
+    } catch (err) {
+        console.error("Error fetching runs:", err);
+        res.status(500).json({ error: "Internal Server Error!" });
+    }
+});
+
 
 
 
@@ -315,6 +364,112 @@ function getTimestamp() {
     const ms = String(now.getMilliseconds()).padStart(3, '0'); // Add ms
 
     return `${yyyy}${mm}${dd}_${hh}${min}${ss}${ms}`;
+}
+
+// ── Run tracking (powers the admin "Automation" page: status + Run now + history) ──────
+// In-process guards prevent a manual run from overlapping a scheduled one (or itself).
+let WAREHOUSE_RUNNING = false;
+let PRODUCT_RUNNING = false;
+
+/** Next fire time of a cron expression as an ISO string, or null if it can't be parsed. */
+function nextRunOf(cronExpression) {
+    try {
+        return CronExpressionParser.parse(cronExpression).next().toDate().toISOString();
+    } catch {
+        return null;
+    }
+}
+
+/** Reads cron.json synchronously (for the status endpoint). Returns {} if absent. */
+function readCronConfig() {
+    const cronFilePath = process.env.CRON_FILE_PATH || path.join(__dirname, "cron.json");
+    try {
+        return JSON.parse(require("fs").readFileSync(cronFilePath, "utf8"));
+    } catch {
+        return {};
+    }
+}
+
+/** Inserts a 'running' run row and returns its id. */
+function recordRunStart(type, trigger) {
+    const info = db.prepare(
+        `INSERT INTO sync_runs (type, trigger, status, started_at) VALUES (?, ?, 'running', CURRENT_TIMESTAMP)`
+    ).run(type, trigger);
+    return info.lastInsertRowid;
+}
+
+/** Stamps a run row with its outcome + duration. */
+function recordRunFinish(id, { status, itemCount = null, error = null, startedAtMs }) {
+    db.prepare(
+        `UPDATE sync_runs SET status = ?, item_count = ?, error = ?, finished_at = CURRENT_TIMESTAMP, duration_ms = ? WHERE id = ?`
+    ).run(status, itemCount, error, startedAtMs ? Date.now() - startedAtMs : null, id);
+}
+
+/** Most recent run for a type (for the status endpoint), or null. */
+function lastRunOf(type) {
+    return db.prepare(
+        `SELECT id, type, trigger, status, item_count, error, started_at, finished_at, duration_ms
+         FROM sync_runs WHERE type = ? ORDER BY id DESC LIMIT 1`
+    ).get(type) || null;
+}
+
+/** Total products touched by a product sync result (changes + new across both systems). */
+function countProductChanges(result) {
+    if (!result || typeof result !== "object") return 0;
+    return Object.entries(result)
+        .filter(([k, v]) => Array.isArray(v) && (k.startsWith("changes") || k.startsWith("newIn")))
+        .reduce((sum, [, v]) => sum + v.length, 0);
+}
+
+/**
+ * Starts a warehouse sync (scheduled or manual). Runs in the background and records the
+ * outcome in sync_runs. Returns immediately: `{ started:true, runId }`, or
+ * `{ started:false, reason:'already_running' }` when one is already in flight.
+ */
+function runWarehouseSync(trigger) {
+    if (WAREHOUSE_RUNNING) return { started: false, reason: "already_running" };
+    WAREHOUSE_RUNNING = true;
+    const startedAtMs = Date.now();
+    const runId = recordRunStart("warehouse", trigger);
+    (async () => {
+        try {
+            const result = await warehousesSync();
+            recordRunFinish(runId, { status: "ok", itemCount: result?.data?.length ?? null, startedAtMs });
+        } catch (err) {
+            recordRunFinish(runId, { status: "error", error: err.message || String(err), startedAtMs });
+        } finally {
+            WAREHOUSE_RUNNING = false;
+        }
+    })();
+    return { started: true, runId };
+}
+
+/**
+ * Starts a product sync (scheduled or manual). Background + recorded like the warehouse one.
+ */
+function runProductSync(trigger) {
+    if (PRODUCT_RUNNING) return { started: false, reason: "already_running" };
+    PRODUCT_RUNNING = true;
+    const startedAtMs = Date.now();
+    const runId = recordRunStart("products", trigger);
+    (async () => {
+        try {
+            const result = await productsSync(...PRODUCTS_SYNC_PARAMS);
+            const fileTimestamp = getTimestamp();
+            await saveProductSyncFile(result, fileTimestamp, "T4A", "CREAGLOBE");
+            recordRunFinish(runId, {
+                status: result?.success === false ? "error" : "ok",
+                itemCount: countProductChanges(result),
+                error: result?.success === false ? `${(result.errors || []).length} item error(s)` : null,
+                startedAtMs
+            });
+        } catch (err) {
+            recordRunFinish(runId, { status: "error", error: err.message || String(err), startedAtMs });
+        } finally {
+            PRODUCT_RUNNING = false;
+        }
+    })();
+    return { started: true, runId };
 }
 
 async function warehousesSync() {
@@ -491,13 +646,9 @@ function startOrUpdateWarehousesCron(cronExpression) {
         console.log("Stopped existing warehouse sync cron job");
     }
 
-    // Start new cron job
-    WAREHOUSE_SYNC_CRON_JOB = cron.schedule(cronExpression, async () => {
-        try {
-            await warehousesSync();
-        } catch (err) {
-            console.error("Scheduled sync failed:", err.message || err);
-        }
+    // Start new cron job (records the run + outcome via the wrapper).
+    WAREHOUSE_SYNC_CRON_JOB = cron.schedule(cronExpression, () => {
+        runWarehouseSync("schedule");
     });
 
     console.log("Warehouse sync cron job scheduled:", cronExpression);
@@ -510,20 +661,9 @@ function startOrUpdateProductsCron(cronExpression) {
         console.log("Stopped existing product sync cron job");
     }
 
-    // Start new cron job
-    PRODUCT_SYNC_CRON_JOB = cron.schedule(cronExpression, async () => {
-        try {
-            const syncResult = await productsSync(...PRODUCTS_SYNC_PARAMS);
-
-            // Save the result to a file and log it in the database
-            const fileTimestamp = getTimestamp();
-            const sourceWarehouse = "T4A"; // System A
-            const targetWarehouse = "CREAGLOBE"; // System B
-            await saveProductSyncFile(syncResult, fileTimestamp, sourceWarehouse, targetWarehouse);
-
-        } catch (err) {
-            console.error("Scheduled product sync failed:", err.message || err);
-        }
+    // Start new cron job (records the run + outcome via the wrapper).
+    PRODUCT_SYNC_CRON_JOB = cron.schedule(cronExpression, () => {
+        runProductSync("schedule");
     });
 
     console.log("Product sync cron job scheduled:", cronExpression);
