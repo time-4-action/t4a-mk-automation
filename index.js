@@ -78,11 +78,14 @@ db.prepare(`
     status TEXT,                 -- 'running' | 'ok' | 'error'
     item_count INTEGER,
     error TEXT,
+    details TEXT,                -- JSON: per-warehouse breakdown / product change buckets + error list
     started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     finished_at DATETIME,
     duration_ms INTEGER
   )
 `).run();
+// Back-fill the details column on databases created before it existed.
+try { db.prepare(`ALTER TABLE sync_runs ADD COLUMN details TEXT`).run(); } catch (e) { /* column already exists */ }
 
 // Holds the warehouse sync cron job instance for later control
 var WAREHOUSE_SYNC_CRON_JOB;
@@ -398,17 +401,17 @@ function recordRunStart(type, trigger) {
     return info.lastInsertRowid;
 }
 
-/** Stamps a run row with its outcome + duration. */
-function recordRunFinish(id, { status, itemCount = null, error = null, startedAtMs }) {
+/** Stamps a run row with its outcome, duration and (JSON) details. */
+function recordRunFinish(id, { status, itemCount = null, error = null, details = null, startedAtMs }) {
     db.prepare(
-        `UPDATE sync_runs SET status = ?, item_count = ?, error = ?, finished_at = CURRENT_TIMESTAMP, duration_ms = ? WHERE id = ?`
-    ).run(status, itemCount, error, startedAtMs ? Date.now() - startedAtMs : null, id);
+        `UPDATE sync_runs SET status = ?, item_count = ?, error = ?, details = ?, finished_at = CURRENT_TIMESTAMP, duration_ms = ? WHERE id = ?`
+    ).run(status, itemCount, error, details, startedAtMs ? Date.now() - startedAtMs : null, id);
 }
 
 /** Most recent run for a type (for the status endpoint), or null. */
 function lastRunOf(type) {
     return db.prepare(
-        `SELECT id, type, trigger, status, item_count, error, started_at, finished_at, duration_ms
+        `SELECT id, type, trigger, status, item_count, error, details, started_at, finished_at, duration_ms
          FROM sync_runs WHERE type = ? ORDER BY id DESC LIMIT 1`
     ).get(type) || null;
 }
@@ -434,7 +437,17 @@ function runWarehouseSync(trigger) {
     (async () => {
         try {
             const result = await warehousesSync();
-            recordRunFinish(runId, { status: "ok", itemCount: result?.data?.length ?? null, startedAtMs });
+            const b = result?.breakdown || {};
+            // Each source warehouse is written into its OWN matching virtual warehouse in the
+            // CREAGLOBE company — the stock is kept separate per warehouse, never merged.
+            const details = JSON.stringify({
+                type: "warehouse",
+                warehouses: [
+                    { source: "T4A", target: "CREAGLOBE / T4A warehouse", count: b.t4a ?? null },
+                    { source: "ProMode (Germany)", target: "CREAGLOBE / Germany warehouse", count: b.germany ?? null }
+                ]
+            });
+            recordRunFinish(runId, { status: "ok", itemCount: b.total ?? result?.data?.length ?? null, details, startedAtMs });
         } catch (err) {
             recordRunFinish(runId, { status: "error", error: err.message || String(err), startedAtMs });
         } finally {
@@ -457,10 +470,31 @@ function runProductSync(trigger) {
             const result = await productsSync(...PRODUCTS_SYNC_PARAMS);
             const fileTimestamp = getTimestamp();
             await saveProductSyncFile(result, fileTimestamp, "T4A", "CREAGLOBE");
+
+            // Per-company change buckets (changes<Name> / newIn<Name>) for the run-details view.
+            const buckets = Object.entries(result || {})
+                .filter(([k, v]) => Array.isArray(v) && (k.startsWith("changes") || k.startsWith("newIn")))
+                .map(([k, v]) => ({ key: k, count: v.length }));
+            // The actual per-item errors, normalised to {system, product_code, action, message}.
+            const rawErrors = Array.isArray(result?.errors) ? result.errors : [];
+            const errors = rawErrors.slice(0, 50).map((e) => ({
+                system: e.system || null,
+                product_code: e.product_code || e.update?.code || e.product?.code || null,
+                action: e.action || null,
+                message:
+                    e.opr_desc_app || e.opr_desc ||
+                    (typeof e.error === "string"
+                        ? e.error
+                        : (e.error?.opr_desc_app || e.error?.opr_desc || (e.error ? JSON.stringify(e.error).slice(0, 200) : null))) ||
+                    "Unknown error"
+            }));
+            const details = JSON.stringify({ type: "products", buckets, errorCount: rawErrors.length, errors });
+
             recordRunFinish(runId, {
                 status: result?.success === false ? "error" : "ok",
                 itemCount: countProductChanges(result),
-                error: result?.success === false ? `${(result.errors || []).length} item error(s)` : null,
+                error: result?.success === false ? `${rawErrors.length} item error(s)` : null,
+                details,
                 startedAtMs
             });
         } catch (err) {
@@ -631,7 +665,16 @@ async function warehousesSync() {
         //         console.error("Background Google Drive sync failed:", err.message || err);
         //     }
         // })(); // immediately invoked async function
-        return { response: stockSyncResponse.data, data: combinedStockArray };
+        return {
+            response: stockSyncResponse.data,
+            data: combinedStockArray,
+            // Counts per source warehouse — each is written into its own CREAGLOBE virtual warehouse.
+            breakdown: {
+                t4a: syncSloStockPreparedArray.length,
+                germany: syncGerStockPreparedArray.length,
+                total: combinedStockArray.length
+            }
+        };
 
     } catch (err) {
         console.error("Warehouse Sync failed:", err.message || err);
