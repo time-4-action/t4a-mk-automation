@@ -77,7 +77,6 @@ function formatProductList(list) {
                 work: p.work,
                 categories: flattenCategories(p.category_tree_list),
                 name_desc: p.name_desc,
-                customs_fee: p.customs_fee,
                 country: p.country,
                 koli_package_amount: p.koli_package_amount,
                 gross_weight: parseNumber(p.gross_weight)

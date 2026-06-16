@@ -296,6 +296,14 @@ app.listen(PORT, () => {
 });
 
 
+// Parse a value to a number, tolerating comma decimal separators on strings.
+// Returns 0 for empty/invalid input so it never poisons downstream sums.
+function parseNumber(value) {
+    if (value == null || value === '') return 0;
+    const n = typeof value === 'string' ? Number(value.replace(',', '.')) : Number(value);
+    return Number.isFinite(n) ? n : 0;
+}
+
 function getTimestamp() {
     const now = new Date();
     const yyyy = now.getFullYear();
@@ -311,34 +319,54 @@ function getTimestamp() {
 
 async function warehousesSync() {
     try {
-        // Step 1: Get stock from T4A
-        const warehouseStockResponse = await axios.post(
-            `${config.metakocka.baseUrl}${config.metakocka.warehouseStockPath}`,
-            {
-                "secret_key": process.env.MK_SECRET_KEY_T4A,
-                "company_id": process.env.MK_COMPANY_ID_T4A,
-                "wh_id_list": process.env.MK_T4A_WAREHOUSE_ID
-            },
-            {
-                headers: {
-                    "Content-Type": "application/json"
+        // Step 1: Get stock from T4A (paginated — the warehouse_stock endpoint returns
+        // at most `limit` (default 1000) items per request, so we must loop over offsets.
+        // Without this, SKUs beyond the first page are absent from the sync payload and
+        // Metakocka would zero out their stock in CREAGLOBE.)
+        const PAGE_SIZE = 1000;
+        let sloWhStockArray = [];
+        let offset = 0;
+
+        while (true) {
+            const warehouseStockResponse = await axios.post(
+                `${config.metakocka.baseUrl}${config.metakocka.warehouseStockPath}`,
+                {
+                    "secret_key": process.env.MK_SECRET_KEY_T4A,
+                    "company_id": process.env.MK_COMPANY_ID_T4A,
+                    "wh_id_list": process.env.MK_T4A_WAREHOUSE_ID,
+                    "limit": PAGE_SIZE,
+                    "offset": offset
+                },
+                {
+                    headers: {
+                        "Content-Type": "application/json"
+                    }
                 }
+            );
+
+            if (!warehouseStockResponse.data || !warehouseStockResponse.data.stock_list) {
+                // Fail heartbeat to BetterStack
+                await warehousesSyncHeartBeat(false, warehouseStockResponse.data);
+                throw new Error("Stock response missing or invalid");
             }
-        );
+
+            const page = warehouseStockResponse.data.stock_list;
+            sloWhStockArray.push(...page);
+
+            // Last page reached when fewer than a full page is returned.
+            if (page.length < PAGE_SIZE) break;
+            offset += PAGE_SIZE;
+        }
         console.log("Step 1")
 
-        if (!warehouseStockResponse.data || !warehouseStockResponse.data.stock_list) {
-            // Fail heartbeat to BetterStack
-            warehousesSyncHeartBeat(false, warehouseStockResponse.data);
-            throw new Error("Stock response missing or invalid");
-        }
-
-        let sloWhStockArray = warehouseStockResponse.data.stock_list;
         let syncSloStockPreparedArray = sloWhStockArray.map(item => ({
-            product_code: item.code,
+            // `count_code` is always present; `code` is optional. Prefer `code` (the sync
+            // match key) but fall back to `count_code` so items aren't silently dropped.
+            product_code: item.code || item.count_code,
             // Free (available-to-sell) stock: Metakocka returns `free_amount` (= amount - reserved)
             // only when reservations are in use; otherwise fall back to amount - reserved_amount
             // (reserved defaults to 0, reducing to `amount`). Avoids syncing reserved units as available.
+            // Negative values are kept intentionally — we support negative stock and must sync it through.
             amount: item.free_amount != null && item.free_amount !== ''
                 ? Number(item.free_amount)
                 : Number(item.amount || 0) - Number(item.reserved_amount || 0),
@@ -358,7 +386,9 @@ async function warehousesSync() {
 
         let syncGerStockPreparedArray = germanyWhStockArray.map(item => ({
             product_code: item.barcode,
-            amount: item.quantity,
+            // CSV quantities may use a comma decimal separator (e.g. "1,5"); normalise to a
+            // number so sumByProductCode doesn't turn a code's total into NaN.
+            amount: parseNumber(item.quantity),
             warehouse_id: process.env.MK_CREAGLOBE_WAREHOUSE_ID_GERMANY_ONE
         }));
 
@@ -389,9 +419,11 @@ async function warehousesSync() {
         );
         console.log("Step 4")
 
-        if (stockSyncResponse.data.opr_desc != "Sync successful") {
+        // Success is signalled by opr_code "0" (opr_desc is a human-readable message that
+        // may change/localize, so don't match on its exact text).
+        if (stockSyncResponse.data.opr_code !== "0") {
             // Fail heartbeat to BetterStack
-            warehousesSyncHeartBeat(false, stockSyncResponse.data);
+            await warehousesSyncHeartBeat(false, stockSyncResponse.data);
             throw new Error("Error warehouse sync!");
         }
 
