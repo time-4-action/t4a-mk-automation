@@ -444,6 +444,13 @@ function runWarehouseSync(trigger) {
         try {
             const result = await warehousesSync();
             const b = result?.breakdown || {};
+            // Per-product sync failures reported by Metakocka (product not found in CREAGLOBE, etc.).
+            const rawErrors = Array.isArray(result?.errors) ? result.errors : [];
+            const errors = rawErrors.slice(0, 50).map((e) => ({
+                product_code: e.product_code || null,
+                warehouse_id: e.warehouse_id || null,
+                message: e.error || e.opr_desc || "Unknown error"
+            }));
             // Each source warehouse is written into its OWN matching virtual warehouse in the
             // CREAGLOBE company — the stock is kept separate per warehouse, never merged.
             const details = JSON.stringify({
@@ -451,9 +458,17 @@ function runWarehouseSync(trigger) {
                 warehouses: [
                     { source: "T4A", target: "CREAGLOBE / T4A warehouse", count: b.t4a ?? null },
                     { source: "ProMode (Germany)", target: "CREAGLOBE / Germany warehouse", count: b.germany ?? null }
-                ]
+                ],
+                errorCount: rawErrors.length,
+                errors
             });
-            recordRunFinish(runId, { status: "ok", itemCount: b.total ?? result?.data?.length ?? null, details, startedAtMs });
+            recordRunFinish(runId, {
+                status: rawErrors.length > 0 ? "error" : "ok",
+                itemCount: b.total ?? result?.data?.length ?? null,
+                error: rawErrors.length > 0 ? `${rawErrors.length} product(s) failed to sync` : null,
+                details,
+                startedAtMs
+            });
         } catch (err) {
             recordRunFinish(runId, { status: "error", error: err.message || String(err), startedAtMs });
         } finally {
@@ -554,21 +569,47 @@ async function warehousesSync() {
         }
         console.log("Step 1")
 
-        let syncSloStockPreparedArray = sloWhStockArray.map(item => ({
+        // Metakocka returns MULTIPLE rows per product within the same warehouse — one per
+        // serial number (serialized products) or per microlocation. Each such row carries a
+        // slice of the physical stock in `amount` (e.g. amount=1 per serial), while
+        // `reserved_amount` and `free_amount` repeat the SAME product-level totals on every
+        // row. So free stock CANNOT be read off (or summed from) `free_amount`; we must:
+        //   1. sum `amount` across all rows for the product  -> true physical on-hand
+        //   2. subtract the reservation ONCE (it's repeated, not per-row)
+        //   3. free = physical - reserved
+        // Example: 9 serial rows each {amount:1, reserved:5, free:-4} -> physical 9, reserved 5, free 4.
+        // (Summing free_amount would wrongly give -36.) All rows share one warehouse here because
+        // the request is filtered by wh_id_list, so the reservation is a single per-warehouse value.
+        const t4aByCode = sloWhStockArray.reduce((acc, item) => {
             // `count_code` is always present; `code` is optional. Prefer `code` (the sync
             // match key) but fall back to `count_code` so items aren't silently dropped.
-            product_code: item.code || item.count_code,
-            // Free (available-to-sell) stock: Metakocka returns `free_amount` (= amount - reserved)
-            // only when reservations are in use; otherwise fall back to amount - reserved_amount
-            // (reserved defaults to 0, reducing to `amount`). Avoids syncing reserved units as available.
-            // Negative values are kept intentionally — we support negative stock and must sync it through.
-            amount: item.free_amount != null && item.free_amount !== ''
-                ? Number(item.free_amount)
-                : Number(item.amount || 0) - Number(item.reserved_amount || 0),
-            warehouse_id: process.env.MK_CREAGLOBE_WAREHOUSE_ID_T4A
-        }));
+            const code = item.code || item.count_code;
+            if (!code) return acc;
 
-        syncSloStockPreparedArray = sumByProductCode(syncSloStockPreparedArray);
+            if (!acc[code]) {
+                acc[code] = {
+                    product_code: code,
+                    physical: 0,
+                    reserved: 0,
+                    warehouse_id: process.env.MK_CREAGLOBE_WAREHOUSE_ID_T4A
+                };
+            }
+            // Amounts arrive as strings and may use a comma decimal separator (e.g. "857,75"),
+            // so parse via parseNumber — raw Number("857,75") returns NaN.
+            acc[code].physical += parseNumber(item.amount);
+            // reserved_amount is the product-level reservation repeated on each row, so take it
+            // once (max guards against rows that omit it or report 0).
+            acc[code].reserved = Math.max(acc[code].reserved, parseNumber(item.reserved_amount));
+            return acc;
+        }, {});
+
+        let syncSloStockPreparedArray = Object.values(t4aByCode).map(p => ({
+            product_code: p.product_code,
+            // Free (available-to-sell) stock. Negative values are kept intentionally — we
+            // support negative stock and must sync it through.
+            amount: p.physical - p.reserved,
+            warehouse_id: p.warehouse_id
+        }));
 
         // Step 2: Get stock from Germany Main (ProMode)
         const germanyWarehouseResponse = await axios.get(config.promode.warehouseStockCSV, { responseType: 'text' })
@@ -622,7 +663,19 @@ async function warehousesSync() {
             throw new Error("Error warehouse sync!");
         }
 
-        // Step 5: Successful heartbeat for BetterStack
+        // Even with opr_code "0", sync_stock reports PER-PRODUCT failures in `error_list`
+        // (e.g. "Product not found", "Warehouse not found") — see docs/warehouse_stock_sync.md §2.2.
+        // These are the usual reason stock "doesn't match": the item exists in T4A but the
+        // sync silently skips it in CREAGLOBE. Surface them so a run isn't reported clean.
+        const syncErrorList = Array.isArray(stockSyncResponse.data.error_list)
+            ? stockSyncResponse.data.error_list
+            : [];
+        if (syncErrorList.length > 0) {
+            console.error(`Warehouse sync: ${syncErrorList.length} product(s) failed to sync:`, syncErrorList);
+        }
+
+        // Step 5: Successful heartbeat for BetterStack (the sync call itself succeeded;
+        // per-item errors are recorded in the run history, not treated as a total failure).
         warehousesSyncHeartBeat();
         console.log("Step 5")
 
@@ -674,11 +727,14 @@ async function warehousesSync() {
         return {
             response: stockSyncResponse.data,
             data: combinedStockArray,
+            // Per-product sync failures reported by Metakocka (empty on a fully clean run).
+            errors: syncErrorList,
             // Counts per source warehouse — each is written into its own CREAGLOBE virtual warehouse.
             breakdown: {
                 t4a: syncSloStockPreparedArray.length,
                 germany: syncGerStockPreparedArray.length,
-                total: combinedStockArray.length
+                total: combinedStockArray.length,
+                errorCount: syncErrorList.length
             }
         };
 
@@ -797,9 +853,9 @@ function sumByProductCode(data) {
             if (!code) return acc; // skip if no code
 
             if (!acc[code]) {
-                acc[code] = { ...item, amount: Number(item.amount) };
+                acc[code] = { ...item, amount: parseNumber(item.amount) };
             } else {
-                acc[code].amount += Number(item.amount);
+                acc[code].amount += parseNumber(item.amount);
             }
             return acc;
         }, {})

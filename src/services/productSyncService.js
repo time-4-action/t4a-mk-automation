@@ -114,10 +114,13 @@ function deepEqualIgnoreCaseUnordered(a, b) {
 }
 
 /**
- * Generates a smart merge delta between two product systems (systemA and systemB).
- * SystemA is considered the main system, and its values win in conflicts.
- * @param {Array<Object>} systemA - The product list from system A.
- * @param {Array<Object>} systemB - The product list from system B.
+ * Generates a one-directional merge delta from systemA (master) to systemB.
+ * SystemA is the single source of truth: its values always win and it is NEVER
+ * modified. Products/fields are only ever pushed A -> B, never B -> A.
+ * `changesA` / `newInA` are intentionally always empty and kept only so the
+ * return shape (and everything built on top of it) stays identical.
+ * @param {Array<Object>} systemA - The product list from system A (master).
+ * @param {Array<Object>} systemB - The product list from system B (mirror).
  * @param {string} nameA - The identifier for system A.
  * @param {string} nameB - The identifier for system B.
  * @param {string} [outputDir='./delta'] - The directory to save the delta files.
@@ -126,11 +129,11 @@ function deepEqualIgnoreCaseUnordered(a, b) {
 function generateSmartMerge(systemA, systemB, nameA, nameB, outputDir = './delta') {
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
-    const mapA = Object.fromEntries(systemA.map(p => [p.code, p]));
     const mapB = Object.fromEntries(systemB.map(p => [p.code, p]));
 
     const changesB = []; // B needs to update to match A
-    const changesA = []; // A can take non-conflicting fields from B
+    // A is the master and is never written to, so these stay empty by design.
+    const changesA = [];
     let newInA = [];
     let newInB = [];
 
@@ -144,31 +147,19 @@ function generateSmartMerge(systemA, systemB, nameA, nameB, outputDir = './delta
         }
 
         const bUpdate = {};
-        const aUpdate = {};
 
         for (const key of new Set([...Object.keys(aProduct), ...Object.keys(bProduct)])) { // Iterate over all unique keys from both products
             if (key === 'count_code' || key === "sales" || key ==="service" || key === "purchasing" || key === "code") continue;
-            
+
             const aValue = aProduct[key];
             const bValue = bProduct[key];
 
-            const areObjects = typeof aValue === 'object' && aValue !== null &&
-                typeof bValue === 'object' && bValue !== null;
-            
             const equal = deepEqualIgnoreCaseUnordered(aValue, bValue);
 
-            if (key === "categories" && !equal) {
-                // console.log(aValue, bValue, equal)
-            }
-
-            if (!equal) {
-                if (aValue !== undefined && bValue !== undefined) {
-                    bUpdate[key] = aValue; // Conflict: System A's value wins, so B needs to update
-                } else if (aValue === undefined && bValue !== undefined) {
-                    aUpdate[key] = bValue; // Value exists only in B, so A can adopt it
-                } else if (aValue !== undefined && bValue === undefined) {
-                    bUpdate[key] = aValue; // Value exists only in A, so B needs to adopt it
-                }
+            if (!equal && aValue !== undefined) {
+                // A is the master: B adopts A's value whenever A has one. Fields that
+                // exist only in B are left untouched (we never write back to A).
+                bUpdate[key] = aValue;
             }
         }
 
@@ -183,28 +174,9 @@ function generateSmartMerge(systemA, systemB, nameA, nameB, outputDir = './delta
                 code: bProduct.code
             });
         }
-
-        if (aUpdate && Object.keys(aUpdate).length > 0) {
-            changesA.push({
-                ...aUpdate,
-                count_code: aProduct.count_code,
-                sales: aProduct.sales,
-                service: aProduct.service,
-                purchasing: bProduct.purchasing, 
-                code: aProduct.code
-            });
-        }
     }
 
-    // Products only in B → add to A
-    for (const bProduct of systemB) {
-        if (!mapA[bProduct.code]) {
-            const { count_code, ...rest } = bProduct;
-            newInA.push({ ...rest });
-        }
-    }
-
-    // Products only in A → add to B
+    // Products only in A → add to B (B-only products are intentionally left alone).
     for (const aProduct of systemA) {
         if (!mapB[aProduct.code]) {
             const { count_code, ...rest } = aProduct;
@@ -387,14 +359,14 @@ async function productsSync(systemAKey, systemACompany, systemBKey, systemBCompa
 
         const { changesA, changesB, newInA, newInB } = generateSmartMerge(productsAFormated, productsBFormated, nameA, nameB);
 
-        const [updateAErrorCodes, updateBErrorCodes, addProductsAErrorCodes, addProductsBErrorCodes] = await Promise.all([
-            updateProducts(changesA, systemAKey, systemACompany, nameA),
+        // Sync is strictly one-directional: system A (T4A) is the master and is never
+        // written to. Only system B (CREAGLOBE) receives updates / new products.
+        const [updateBErrorCodes, addProductsBErrorCodes] = await Promise.all([
             updateProducts(changesB, systemBKey, systemBCompany, nameB),
-            addProducts(newInA, systemAKey, systemACompany, nameA),
             addProducts(newInB, systemBKey, systemBCompany, nameB)
         ]);
 
-        const allErrors = [...updateAErrorCodes, ...updateBErrorCodes, ...addProductsAErrorCodes, ...addProductsBErrorCodes];
+        const allErrors = [...updateBErrorCodes, ...addProductsBErrorCodes];
 
         if (allErrors.length > 0) {
             console.error("Synchronization completed with errors:", allErrors);
