@@ -9,6 +9,7 @@ const axios = require("axios");
 const cron = require("node-cron");
 const express = require("express");
 const { isValidCron } = require("cron-validator");
+const { CronExpressionParser } = require("cron-parser");
 const Database = require('better-sqlite3');
 const csv = require('csv-parser');
 const { Readable } = require('stream');
@@ -66,6 +67,26 @@ db.prepare(`
   )
 `).run();
 
+// Unified run history for the admin "Automation" page: one row per warehouse/product
+// sync (scheduled or manual) with its outcome, duration and item count. node-cron exposes
+// no last-run/next-run info, so we track it ourselves here.
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS sync_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT,                   -- 'warehouse' | 'products'
+    trigger TEXT,                -- 'manual' | 'schedule'
+    status TEXT,                 -- 'running' | 'ok' | 'error'
+    item_count INTEGER,
+    error TEXT,
+    details TEXT,                -- JSON: per-warehouse breakdown / product change buckets + error list
+    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    finished_at DATETIME,
+    duration_ms INTEGER
+  )
+`).run();
+// Back-fill the details column on databases created before it existed.
+try { db.prepare(`ALTER TABLE sync_runs ADD COLUMN details TEXT`).run(); } catch (e) { /* column already exists */ }
+
 // Holds the warehouse sync cron job instance for later control
 var WAREHOUSE_SYNC_CRON_JOB;
 var PRODUCT_SYNC_CRON_JOB;
@@ -75,6 +96,12 @@ const initialCronExpression = loadCronExpression();
 
 // Start or update the warehouse sync job with the loaded schedule
 startOrUpdateWarehousesCron(initialCronExpression);
+
+// Start the product sync job too. Without this it was only ever scheduled when the
+// PUT /api/v1/schedules/product-sync endpoint was hit, so on a plain restart the
+// product sync never ran on its cron schedule. Fall back to hourly if the key is absent.
+const initialProductCronExpression = loadCronExpression("productSync") || "0 * * * *";
+startOrUpdateProductsCron(initialProductCronExpression);
 
 // API key from environment for route authentication
 const API_KEY = process.env.API_KEY;
@@ -94,18 +121,14 @@ app.get("/api/v1/uptime", (req, res) => {
     res.json({ success: true });
 });
 
-// POST endpoint to trigger warehouse data sync
-app.post("/api/v1/warehouse/sync", authenticate, async (req, res) => {
-    try {
-        // Perform the warehouse sync
-        const result = await warehousesSync();
-
-        // Return sync result as JSON
-        res.json(result);
-    } catch (err) {
-        // Handle errors and respond with status 500
-        res.status(500).json({ error: err.message || "Internal Server Error!" });
+// POST endpoint to trigger warehouse data sync. Runs in the background and records the
+// outcome in sync_runs; responds 202 immediately (or 409 if a sync is already running).
+app.post("/api/v1/warehouse/sync", authenticate, (req, res) => {
+    const r = runWarehouseSync("manual");
+    if (!r.started) {
+        return res.status(409).json({ error: "A warehouse sync is already running." });
     }
+    res.status(202).json({ started: true, runId: r.runId, startedAt: new Date().toISOString() });
 });
 
 app.get("/api/v1/warehouse/sync/logs", async (req, res) => {
@@ -197,20 +220,13 @@ app.get("/api/v1/schedules/warehouse-sync", async (req, res) => {
 });
 
 
-app.post("/api/v1/products/sync", authenticate, async (req, res) => {
-    try {
-        const syncResult = await productsSync(...PRODUCTS_SYNC_PARAMS);
-
-        // Save the result to a file and log it in the database
-        const fileTimestamp = getTimestamp();
-        const sourceWarehouse = "T4A"; // System A
-        const targetWarehouse = "CREAGLOBE"; // System B
-        await saveProductSyncFile(syncResult, fileTimestamp, sourceWarehouse, targetWarehouse);
-
-        res.json(syncResult);
-    } catch (err) {
-        res.status(500).json({ error: err.message || "Internal Server Error!" });
+// POST endpoint to trigger product sync. Background + recorded; 202 (or 409 if running).
+app.post("/api/v1/products/sync", authenticate, (req, res) => {
+    const r = runProductSync("manual");
+    if (!r.started) {
+        return res.status(409).json({ error: "A product sync is already running." });
     }
+    res.status(202).json({ started: true, runId: r.runId, startedAt: new Date().toISOString() });
 });
 
 app.get("/api/v1/products/sync/logs", async (req, res) => {
@@ -282,6 +298,48 @@ app.get("/api/v1/schedules/product-sync", async (req, res) => {
     }
 });
 
+// Unified status for the admin "Automation" page: both schedules, their next fire time,
+// whether a sync is currently running, and the last recorded run for each.
+app.get("/api/v1/status", authenticate, (req, res) => {
+    try {
+        const cfg = readCronConfig();
+        const warehouseCron = cfg.warehouseSync || loadCronExpression("warehouseSync");
+        const productCron = cfg.productSync || "0 * * * *";
+        res.json({
+            warehouse: {
+                schedule: warehouseCron,
+                nextRun: nextRunOf(warehouseCron),
+                isRunning: WAREHOUSE_RUNNING,
+                lastRun: lastRunOf("warehouse")
+            },
+            products: {
+                schedule: productCron,
+                nextRun: nextRunOf(productCron),
+                isRunning: PRODUCT_RUNNING,
+                lastRun: lastRunOf("products")
+            }
+        });
+    } catch (err) {
+        console.error("Error building status:", err);
+        res.status(500).json({ error: "Internal Server Error!" });
+    }
+});
+
+// Recent run history. Optional ?type=warehouse|products and ?limit= (max 100).
+app.get("/api/v1/runs", authenticate, (req, res) => {
+    try {
+        const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+        const type = req.query.type;
+        const rows = type
+            ? db.prepare(`SELECT * FROM sync_runs WHERE type = ? ORDER BY id DESC LIMIT ?`).all(type, limit)
+            : db.prepare(`SELECT * FROM sync_runs ORDER BY id DESC LIMIT ?`).all(limit);
+        res.json(rows);
+    } catch (err) {
+        console.error("Error fetching runs:", err);
+        res.status(500).json({ error: "Internal Server Error!" });
+    }
+});
+
 
 
 
@@ -296,6 +354,14 @@ app.listen(PORT, () => {
 });
 
 
+// Parse a value to a number, tolerating comma decimal separators on strings.
+// Returns 0 for empty/invalid input so it never poisons downstream sums.
+function parseNumber(value) {
+    if (value == null || value === '') return 0;
+    const n = typeof value === 'string' ? Number(value.replace(',', '.')) : Number(value);
+    return Number.isFinite(n) ? n : 0;
+}
+
 function getTimestamp() {
     const now = new Date();
     const yyyy = now.getFullYear();
@@ -309,43 +375,241 @@ function getTimestamp() {
     return `${yyyy}${mm}${dd}_${hh}${min}${ss}${ms}`;
 }
 
+// ── Run tracking (powers the admin "Automation" page: status + Run now + history) ──────
+// In-process guards prevent a manual run from overlapping a scheduled one (or itself).
+let WAREHOUSE_RUNNING = false;
+let PRODUCT_RUNNING = false;
+
+/** Next fire time of a cron expression as an ISO string, or null if it can't be parsed. */
+function nextRunOf(cronExpression) {
+    try {
+        return CronExpressionParser.parse(cronExpression).next().toDate().toISOString();
+    } catch {
+        return null;
+    }
+}
+
+/** Reads cron.json synchronously (for the status endpoint). Returns {} if absent. */
+function readCronConfig() {
+    const cronFilePath = process.env.CRON_FILE_PATH || path.join(__dirname, "cron.json");
+    try {
+        return JSON.parse(require("fs").readFileSync(cronFilePath, "utf8"));
+    } catch {
+        return {};
+    }
+}
+
+/** Inserts a 'running' run row and returns its id. */
+function recordRunStart(type, trigger) {
+    const info = db.prepare(
+        `INSERT INTO sync_runs (type, trigger, status, started_at) VALUES (?, ?, 'running', CURRENT_TIMESTAMP)`
+    ).run(type, trigger);
+    return info.lastInsertRowid;
+}
+
+/** Stamps a run row with its outcome, duration and (JSON) details. */
+function recordRunFinish(id, { status, itemCount = null, error = null, details = null, startedAtMs }) {
+    db.prepare(
+        `UPDATE sync_runs SET status = ?, item_count = ?, error = ?, details = ?, finished_at = CURRENT_TIMESTAMP, duration_ms = ? WHERE id = ?`
+    ).run(status, itemCount, error, details, startedAtMs ? Date.now() - startedAtMs : null, id);
+}
+
+/** Most recent run for a type (for the status endpoint), or null. */
+function lastRunOf(type) {
+    return db.prepare(
+        `SELECT id, type, trigger, status, item_count, error, details, started_at, finished_at, duration_ms
+         FROM sync_runs WHERE type = ? ORDER BY id DESC LIMIT 1`
+    ).get(type) || null;
+}
+
+/** Total products touched by a product sync result (changes + new across both systems). */
+function countProductChanges(result) {
+    if (!result || typeof result !== "object") return 0;
+    return Object.entries(result)
+        .filter(([k, v]) => Array.isArray(v) && (k.startsWith("changes") || k.startsWith("newIn")))
+        .reduce((sum, [, v]) => sum + v.length, 0);
+}
+
+/**
+ * Starts a warehouse sync (scheduled or manual). Runs in the background and records the
+ * outcome in sync_runs. Returns immediately: `{ started:true, runId }`, or
+ * `{ started:false, reason:'already_running' }` when one is already in flight.
+ */
+function runWarehouseSync(trigger) {
+    if (WAREHOUSE_RUNNING) return { started: false, reason: "already_running" };
+    WAREHOUSE_RUNNING = true;
+    const startedAtMs = Date.now();
+    const runId = recordRunStart("warehouse", trigger);
+    (async () => {
+        try {
+            const result = await warehousesSync();
+            const b = result?.breakdown || {};
+            // Per-product sync failures reported by Metakocka (product not found in CREAGLOBE, etc.).
+            const rawErrors = Array.isArray(result?.errors) ? result.errors : [];
+            const errors = rawErrors.slice(0, 50).map((e) => ({
+                product_code: e.product_code || null,
+                warehouse_id: e.warehouse_id || null,
+                message: e.error || e.opr_desc || "Unknown error"
+            }));
+            // Each source warehouse is written into its OWN matching virtual warehouse in the
+            // CREAGLOBE company — the stock is kept separate per warehouse, never merged.
+            const details = JSON.stringify({
+                type: "warehouse",
+                warehouses: [
+                    { source: "T4A", target: "CREAGLOBE / T4A warehouse", count: b.t4a ?? null },
+                    { source: "ProMode (Germany)", target: "CREAGLOBE / Germany warehouse", count: b.germany ?? null }
+                ],
+                errorCount: rawErrors.length,
+                errors
+            });
+            recordRunFinish(runId, {
+                status: rawErrors.length > 0 ? "error" : "ok",
+                itemCount: b.total ?? result?.data?.length ?? null,
+                error: rawErrors.length > 0 ? `${rawErrors.length} product(s) failed to sync` : null,
+                details,
+                startedAtMs
+            });
+        } catch (err) {
+            recordRunFinish(runId, { status: "error", error: err.message || String(err), startedAtMs });
+        } finally {
+            WAREHOUSE_RUNNING = false;
+        }
+    })();
+    return { started: true, runId };
+}
+
+/**
+ * Starts a product sync (scheduled or manual). Background + recorded like the warehouse one.
+ */
+function runProductSync(trigger) {
+    if (PRODUCT_RUNNING) return { started: false, reason: "already_running" };
+    PRODUCT_RUNNING = true;
+    const startedAtMs = Date.now();
+    const runId = recordRunStart("products", trigger);
+    (async () => {
+        try {
+            const result = await productsSync(...PRODUCTS_SYNC_PARAMS);
+            const fileTimestamp = getTimestamp();
+            await saveProductSyncFile(result, fileTimestamp, "T4A", "CREAGLOBE");
+
+            // Per-company change buckets (changes<Name> / newIn<Name>) for the run-details view.
+            const buckets = Object.entries(result || {})
+                .filter(([k, v]) => Array.isArray(v) && (k.startsWith("changes") || k.startsWith("newIn")))
+                .map(([k, v]) => ({ key: k, count: v.length }));
+            // The actual per-item errors, normalised to {system, product_code, action, message}.
+            const rawErrors = Array.isArray(result?.errors) ? result.errors : [];
+            const errors = rawErrors.slice(0, 50).map((e) => ({
+                system: e.system || null,
+                product_code: e.product_code || e.update?.code || e.product?.code || null,
+                action: e.action || null,
+                message:
+                    e.opr_desc_app || e.opr_desc ||
+                    (typeof e.error === "string"
+                        ? e.error
+                        : (e.error?.opr_desc_app || e.error?.opr_desc || (e.error ? JSON.stringify(e.error).slice(0, 200) : null))) ||
+                    "Unknown error"
+            }));
+            const details = JSON.stringify({ type: "products", buckets, errorCount: rawErrors.length, errors });
+
+            recordRunFinish(runId, {
+                status: result?.success === false ? "error" : "ok",
+                itemCount: countProductChanges(result),
+                error: result?.success === false ? `${rawErrors.length} item error(s)` : null,
+                details,
+                startedAtMs
+            });
+        } catch (err) {
+            recordRunFinish(runId, { status: "error", error: err.message || String(err), startedAtMs });
+        } finally {
+            PRODUCT_RUNNING = false;
+        }
+    })();
+    return { started: true, runId };
+}
+
 async function warehousesSync() {
     try {
-        // Step 1: Get stock from T4A
-        const warehouseStockResponse = await axios.post(
-            `${config.metakocka.baseUrl}${config.metakocka.warehouseStockPath}`,
-            {
-                "secret_key": process.env.MK_SECRET_KEY_T4A,
-                "company_id": process.env.MK_COMPANY_ID_T4A,
-                "wh_id_list": process.env.MK_T4A_WAREHOUSE_ID
-            },
-            {
-                headers: {
-                    "Content-Type": "application/json"
+        // Step 1: Get stock from T4A (paginated — the warehouse_stock endpoint returns
+        // at most `limit` (default 1000) items per request, so we must loop over offsets.
+        // Without this, SKUs beyond the first page are absent from the sync payload and
+        // Metakocka would zero out their stock in CREAGLOBE.)
+        const PAGE_SIZE = 1000;
+        let sloWhStockArray = [];
+        let offset = 0;
+
+        while (true) {
+            const warehouseStockResponse = await axios.post(
+                `${config.metakocka.baseUrl}${config.metakocka.warehouseStockPath}`,
+                {
+                    "secret_key": process.env.MK_SECRET_KEY_T4A,
+                    "company_id": process.env.MK_COMPANY_ID_T4A,
+                    "wh_id_list": process.env.MK_T4A_WAREHOUSE_ID,
+                    "limit": PAGE_SIZE,
+                    "offset": offset
+                },
+                {
+                    headers: {
+                        "Content-Type": "application/json"
+                    }
                 }
+            );
+
+            if (!warehouseStockResponse.data || !warehouseStockResponse.data.stock_list) {
+                // Fail heartbeat to BetterStack
+                await warehousesSyncHeartBeat(false, warehouseStockResponse.data);
+                throw new Error("Stock response missing or invalid");
             }
-        );
+
+            const page = warehouseStockResponse.data.stock_list;
+            sloWhStockArray.push(...page);
+
+            // Last page reached when fewer than a full page is returned.
+            if (page.length < PAGE_SIZE) break;
+            offset += PAGE_SIZE;
+        }
         console.log("Step 1")
 
-        if (!warehouseStockResponse.data || !warehouseStockResponse.data.stock_list) {
-            // Fail heartbeat to BetterStack
-            warehousesSyncHeartBeat(false, warehouseStockResponse.data);
-            throw new Error("Stock response missing or invalid");
-        }
+        // Metakocka returns MULTIPLE rows per product within the same warehouse — one per
+        // serial number (serialized products) or per microlocation. Each such row carries a
+        // slice of the physical stock in `amount` (e.g. amount=1 per serial), while
+        // `reserved_amount` and `free_amount` repeat the SAME product-level totals on every
+        // row. So free stock CANNOT be read off (or summed from) `free_amount`; we must:
+        //   1. sum `amount` across all rows for the product  -> true physical on-hand
+        //   2. subtract the reservation ONCE (it's repeated, not per-row)
+        //   3. free = physical - reserved
+        // Example: 9 serial rows each {amount:1, reserved:5, free:-4} -> physical 9, reserved 5, free 4.
+        // (Summing free_amount would wrongly give -36.) All rows share one warehouse here because
+        // the request is filtered by wh_id_list, so the reservation is a single per-warehouse value.
+        const t4aByCode = sloWhStockArray.reduce((acc, item) => {
+            // `count_code` is always present; `code` is optional. Prefer `code` (the sync
+            // match key) but fall back to `count_code` so items aren't silently dropped.
+            const code = item.code || item.count_code;
+            if (!code) return acc;
 
-        let sloWhStockArray = warehouseStockResponse.data.stock_list;
-        let syncSloStockPreparedArray = sloWhStockArray.map(item => ({
-            product_code: item.code,
-            // Free (available-to-sell) stock: Metakocka returns `free_amount` (= amount - reserved)
-            // only when reservations are in use; otherwise fall back to amount - reserved_amount
-            // (reserved defaults to 0, reducing to `amount`). Avoids syncing reserved units as available.
-            amount: item.free_amount != null && item.free_amount !== ''
-                ? Number(item.free_amount)
-                : Number(item.amount || 0) - Number(item.reserved_amount || 0),
-            warehouse_id: process.env.MK_CREAGLOBE_WAREHOUSE_ID_T4A
+            if (!acc[code]) {
+                acc[code] = {
+                    product_code: code,
+                    physical: 0,
+                    reserved: 0,
+                    warehouse_id: process.env.MK_CREAGLOBE_WAREHOUSE_ID_T4A
+                };
+            }
+            // Amounts arrive as strings and may use a comma decimal separator (e.g. "857,75"),
+            // so parse via parseNumber — raw Number("857,75") returns NaN.
+            acc[code].physical += parseNumber(item.amount);
+            // reserved_amount is the product-level reservation repeated on each row, so take it
+            // once (max guards against rows that omit it or report 0).
+            acc[code].reserved = Math.max(acc[code].reserved, parseNumber(item.reserved_amount));
+            return acc;
+        }, {});
+
+        let syncSloStockPreparedArray = Object.values(t4aByCode).map(p => ({
+            product_code: p.product_code,
+            // Free (available-to-sell) stock. Negative values are kept intentionally — we
+            // support negative stock and must sync it through.
+            amount: p.physical - p.reserved,
+            warehouse_id: p.warehouse_id
         }));
-
-        syncSloStockPreparedArray = sumByProductCode(syncSloStockPreparedArray);
 
         // Step 2: Get stock from Germany Main (ProMode)
         const germanyWarehouseResponse = await axios.get(config.promode.warehouseStockCSV, { responseType: 'text' })
@@ -358,7 +622,9 @@ async function warehousesSync() {
 
         let syncGerStockPreparedArray = germanyWhStockArray.map(item => ({
             product_code: item.barcode,
-            amount: item.quantity,
+            // CSV quantities may use a comma decimal separator (e.g. "1,5"); normalise to a
+            // number so sumByProductCode doesn't turn a code's total into NaN.
+            amount: parseNumber(item.quantity),
             warehouse_id: process.env.MK_CREAGLOBE_WAREHOUSE_ID_GERMANY_ONE
         }));
 
@@ -389,13 +655,27 @@ async function warehousesSync() {
         );
         console.log("Step 4")
 
-        if (stockSyncResponse.data.opr_desc != "Sync successful") {
+        // Success is signalled by opr_code "0" (opr_desc is a human-readable message that
+        // may change/localize, so don't match on its exact text).
+        if (stockSyncResponse.data.opr_code !== "0") {
             // Fail heartbeat to BetterStack
-            warehousesSyncHeartBeat(false, stockSyncResponse.data);
+            await warehousesSyncHeartBeat(false, stockSyncResponse.data);
             throw new Error("Error warehouse sync!");
         }
 
-        // Step 5: Successful heartbeat for BetterStack
+        // Even with opr_code "0", sync_stock reports PER-PRODUCT failures in `error_list`
+        // (e.g. "Product not found", "Warehouse not found") — see docs/warehouse_stock_sync.md §2.2.
+        // These are the usual reason stock "doesn't match": the item exists in T4A but the
+        // sync silently skips it in CREAGLOBE. Surface them so a run isn't reported clean.
+        const syncErrorList = Array.isArray(stockSyncResponse.data.error_list)
+            ? stockSyncResponse.data.error_list
+            : [];
+        if (syncErrorList.length > 0) {
+            console.error(`Warehouse sync: ${syncErrorList.length} product(s) failed to sync:`, syncErrorList);
+        }
+
+        // Step 5: Successful heartbeat for BetterStack (the sync call itself succeeded;
+        // per-item errors are recorded in the run history, not treated as a total failure).
         warehousesSyncHeartBeat();
         console.log("Step 5")
 
@@ -444,7 +724,19 @@ async function warehousesSync() {
         //         console.error("Background Google Drive sync failed:", err.message || err);
         //     }
         // })(); // immediately invoked async function
-        return { response: stockSyncResponse.data, data: combinedStockArray };
+        return {
+            response: stockSyncResponse.data,
+            data: combinedStockArray,
+            // Per-product sync failures reported by Metakocka (empty on a fully clean run).
+            errors: syncErrorList,
+            // Counts per source warehouse — each is written into its own CREAGLOBE virtual warehouse.
+            breakdown: {
+                t4a: syncSloStockPreparedArray.length,
+                germany: syncGerStockPreparedArray.length,
+                total: combinedStockArray.length,
+                errorCount: syncErrorList.length
+            }
+        };
 
     } catch (err) {
         console.error("Warehouse Sync failed:", err.message || err);
@@ -459,13 +751,9 @@ function startOrUpdateWarehousesCron(cronExpression) {
         console.log("Stopped existing warehouse sync cron job");
     }
 
-    // Start new cron job
-    WAREHOUSE_SYNC_CRON_JOB = cron.schedule(cronExpression, async () => {
-        try {
-            await warehousesSync();
-        } catch (err) {
-            console.error("Scheduled sync failed:", err.message || err);
-        }
+    // Start new cron job (records the run + outcome via the wrapper).
+    WAREHOUSE_SYNC_CRON_JOB = cron.schedule(cronExpression, () => {
+        runWarehouseSync("schedule");
     });
 
     console.log("Warehouse sync cron job scheduled:", cronExpression);
@@ -478,20 +766,9 @@ function startOrUpdateProductsCron(cronExpression) {
         console.log("Stopped existing product sync cron job");
     }
 
-    // Start new cron job
-    PRODUCT_SYNC_CRON_JOB = cron.schedule(cronExpression, async () => {
-        try {
-            const syncResult = await productsSync(...PRODUCTS_SYNC_PARAMS);
-
-            // Save the result to a file and log it in the database
-            const fileTimestamp = getTimestamp();
-            const sourceWarehouse = "T4A"; // System A
-            const targetWarehouse = "CREAGLOBE"; // System B
-            await saveProductSyncFile(syncResult, fileTimestamp, sourceWarehouse, targetWarehouse);
-
-        } catch (err) {
-            console.error("Scheduled product sync failed:", err.message || err);
-        }
+    // Start new cron job (records the run + outcome via the wrapper).
+    PRODUCT_SYNC_CRON_JOB = cron.schedule(cronExpression, () => {
+        runProductSync("schedule");
     });
 
     console.log("Product sync cron job scheduled:", cronExpression);
@@ -576,9 +853,9 @@ function sumByProductCode(data) {
             if (!code) return acc; // skip if no code
 
             if (!acc[code]) {
-                acc[code] = { ...item, amount: Number(item.amount) };
+                acc[code] = { ...item, amount: parseNumber(item.amount) };
             } else {
-                acc[code].amount += Number(item.amount);
+                acc[code].amount += parseNumber(item.amount);
             }
             return acc;
         }, {})
