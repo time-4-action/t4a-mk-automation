@@ -1,15 +1,18 @@
 # check -> deploy -> verify.
 #
-# Checks every pull request and every push to main. On main, a green check
-# builds the image, pushes it to GHCR tagged with the commit SHA and
-# `latest`, and rolls the production container onto that exact SHA over SSH,
-# rolling back to the previous image if it does not come up healthy on that
-# commit. `verify` then checks the public URL through nginx. The VM only pulls;
-# see docs/deployment.md.
+# Checks every pull request and every push. A green check on `dev` or `main`
+# builds the image, pushes it to GHCR and rolls that branch's server onto that
+# exact SHA over SSH, rolling back to the previous image if it does not come up
+# healthy on that commit. `verify` then checks the public URL.
+#
+#   dev  -> development env, DEV_DEPLOY_* secrets,  :dev-<sha> + :dev,  mkauto.dev.time-4-action.com
+#   main -> production env,  PROD_DEPLOY_* secrets, :<sha> + :latest,   mkauto.time-4-action.com
+#
+# The VMs only pull; see docs/deployment.md.
 name: ci
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
   workflow_dispatch:
 
@@ -25,8 +28,17 @@ permissions:
 
 env:
   IMAGE: ghcr.io/time-4-action/t4a-mk-automation
-  # Overridable with the PRODUCTION_URL repository variable.
-  PRODUCTION_URL: ${{ vars.PRODUCTION_URL || 'https://mkauto.time-4-action.com' }}
+  # Everything below differs per branch: main is production, anything else (only dev
+  # reaches the deploy job) is development.
+  # Image tag; dev ones are prefixed so a dev build can never be mistaken for a release.
+  TAG: ${{ github.ref_name == 'main' && github.sha || format('dev-{0}', github.sha) }}
+  # Moving tag the server's compose file falls back to.
+  CHANNEL: ${{ github.ref_name == 'main' && 'latest' || 'dev' }}
+  # Host port the server's compose publishes on loopback, for the health check below.
+  # The dev VM hosts several apps, so each gets its own (see deploy/docker-compose.dev.yml).
+  HOST_PORT: ${{ github.ref_name == 'main' && '3000' || '13010' }}
+  # Overridable with the PRODUCTION_URL / DEV_URL repository variables.
+  PUBLIC_URL: ${{ github.ref_name == 'main' && (vars.PRODUCTION_URL || 'https://mkauto.time-4-action.com') || (vars.DEV_URL || 'https://mkauto.dev.time-4-action.com') }}
 
 jobs:
   check:
@@ -57,19 +69,28 @@ jobs:
 
   deploy:
     needs: check
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     runs-on: ubuntu-24.04
-    # The PROD_DEPLOY_* SSH secrets are organization secrets. GHCR needs none:
+    # The *_DEPLOY_* SSH secrets are organization secrets. GHCR needs none:
     # the job's own GITHUB_TOKEN pushes the image and lets the VM pull it.
-    environment: production
+    # Each environment only accepts its own branch (repository settings).
+    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     permissions:
       contents: read
       packages: write
     concurrency:
-      group: deploy-prod
+      group: deploy-${{ github.ref_name == 'main' && 'prod' || 'dev' }}
       cancel-in-progress: false
     timeout-minutes: 30
     steps:
+      # The `main && PROD || DEV` picks below would fall through to the dev server if the
+      # production secret were empty; fail loudly instead.
+      - name: Check deploy secrets
+        env:
+          HOST: ${{ github.ref_name == 'main' && secrets.PROD_DEPLOY_HOST || '' }}${{ github.ref_name != 'main' && secrets.DEV_DEPLOY_HOST || '' }}
+        run: |
+          [ -n "$HOST" ] || { echo "::error::deploy host secret for ${{ github.ref_name }} is empty or not shared with this repository"; exit 1; }
+
       - uses: actions/checkout@v7
 
       - uses: docker/setup-buildx-action@v4
@@ -88,8 +109,8 @@ jobs:
           build-args: |
             GIT_SHA=${{ github.sha }}
           tags: |
-            ${{ env.IMAGE }}:${{ github.sha }}
-            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ env.TAG }}
+            ${{ env.IMAGE }}:${{ env.CHANNEL }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -98,11 +119,11 @@ jobs:
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          host: ${{ secrets.PROD_DEPLOY_HOST }}
+          host: ${{ github.ref_name == 'main' && secrets.PROD_DEPLOY_HOST || secrets.DEV_DEPLOY_HOST }}
           # The SSH login on the VM; override with the DEPLOY_USER variable.
           username: ${{ vars.DEPLOY_USER || 'deploy' }}
-          key: ${{ secrets.PROD_DEPLOY_SSH_KEY }}
-          fingerprint: ${{ secrets.PROD_DEPLOY_FINGERPRINT }}
+          key: ${{ github.ref_name == 'main' && secrets.PROD_DEPLOY_SSH_KEY || secrets.DEV_DEPLOY_SSH_KEY }}
+          fingerprint: ${{ github.ref_name == 'main' && secrets.PROD_DEPLOY_FINGERPRINT || secrets.DEV_DEPLOY_FINGERPRINT }}
           timeout: 30s
           command_timeout: 15m
           envs: GHCR_USER,GHCR_TOKEN
@@ -110,7 +131,7 @@ jobs:
             set -u
             cd /data/stack/apps/time-4-action/mk-automation || exit 1
             SHA=${{ github.sha }}
-            NEW=${{ env.IMAGE }}:$SHA
+            NEW=${{ env.IMAGE }}:${{ env.TAG }}
             SVC=t4a-mk-automation
 
             # The image the service runs now is what a failed deploy goes back to.
@@ -123,7 +144,7 @@ jobs:
 
             healthy() {
               for i in $(seq 1 30); do
-                curl -fsS http://127.0.0.1:3000/healthz >/dev/null && return 0
+                curl -fsS http://127.0.0.1:${{ env.HOST_PORT }}/healthz >/dev/null && return 0
                 sleep 2
               done
               return 1
@@ -186,4 +207,4 @@ jobs:
       - name: Public health check
         run: |
           curl -fsS --retry 10 --retry-delay 6 --retry-all-errors --max-time 10 \
-            "$PRODUCTION_URL/healthz"
+            "$PUBLIC_URL/healthz"
