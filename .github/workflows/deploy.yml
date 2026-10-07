@@ -1,0 +1,189 @@
+# check -> deploy -> verify.
+#
+# Checks every pull request and every push to main. On main, a green check
+# builds the image, pushes it to GHCR tagged with the commit SHA and
+# `latest`, and rolls the production container onto that exact SHA over SSH,
+# rolling back to the previous image if it does not come up healthy on that
+# commit. `verify` then checks the public URL through nginx. The VM only pulls;
+# see docs/deployment.md.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same pull request supersedes the running check. On main
+# runs are never cancelled, only queued, so an older commit can never be
+# deployed over a newer one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/time-4-action/t4a-mk-automation
+  # Overridable with the PRODUCTION_URL repository variable.
+  PRODUCTION_URL: ${{ vars.PRODUCTION_URL || 'https://mkauto.time-4-action.com' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+      # There is no test suite yet; a syntax error anywhere still fails here
+      # rather than in the container on the VM.
+      - name: Syntax check
+        run: |
+          git ls-files '*.js' ':!:public/**' | xargs -n1 node --check
+      # The same build the deploy runs, so a broken Dockerfile or a native
+      # module that no longer installs fails the pull request, not the deploy.
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          push: false
+          platforms: linux/amd64
+          cache-from: type=gha
+
+  deploy:
+    needs: check
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    # The PROD_DEPLOY_* SSH secrets are organization secrets. GHCR needs none:
+    # the job's own GITHUB_TOKEN pushes the image and lets the VM pull it.
+    environment: production
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          push: true
+          platforms: linux/amd64
+          # Baked in as APP_VERSION, which the server checks after rollout.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: appleboy/ssh-action@v1
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          host: ${{ secrets.PROD_DEPLOY_HOST }}
+          # The SSH login on the VM; override with the DEPLOY_USER variable.
+          username: ${{ vars.DEPLOY_USER || 'deploy' }}
+          key: ${{ secrets.PROD_DEPLOY_SSH_KEY }}
+          fingerprint: ${{ secrets.PROD_DEPLOY_FINGERPRINT }}
+          timeout: 30s
+          command_timeout: 15m
+          envs: GHCR_USER,GHCR_TOKEN
+          script: |
+            set -u
+            cd /data/stack/apps/time-4-action/mk-automation || exit 1
+            SHA=${{ github.sha }}
+            NEW=${{ env.IMAGE }}:$SHA
+            SVC=t4a-mk-automation
+
+            # The image the service runs now is what a failed deploy goes back to.
+            PREV=""
+            CID=$(docker compose ps -q $SVC 2>/dev/null || true)
+            if [ -n "$CID" ]; then
+              PREV=$(docker inspect --format '{{.Config.Image}}' "$CID")
+            fi
+            echo "running: ${PREV:-nothing}  deploying: $NEW"
+
+            healthy() {
+              for i in $(seq 1 30); do
+                curl -fsS http://127.0.0.1:3000/healthz >/dev/null && return 0
+                sleep 2
+              done
+              return 1
+            }
+
+            # Healthy is not enough: the container must be running the image
+            # built from this commit, not one left over.
+            on_commit() {
+              RUNNING=$(docker compose exec -T $SVC printenv APP_VERSION 2>/dev/null || true)
+              echo "$SVC reports APP_VERSION=${RUNNING:-none}"
+              [ "$RUNNING" = "$SHA" ]
+            }
+
+            # The pull logs in with this job's GITHUB_TOKEN, which expires when
+            # the job ends, and logs out again on every exit: the VM keeps no
+            # registry credential. Rollback needs none, the previous image is local.
+            trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null || exit 1
+
+            export APP_IMAGE=$NEW
+            # A failed pull changes nothing on the server. Retried, because
+            # registries have transient failures.
+            for i in 1 2 3; do
+              docker compose pull $SVC && break
+              [ "$i" = 3 ] && exit 1
+              echo "pull failed, retrying"; sleep 10
+            done
+
+            if docker compose up -d --remove-orphans $SVC && healthy && on_commit; then
+              echo "healthy on $NEW"
+              docker image prune -f >/dev/null 2>&1 || true
+              exit 0
+            fi
+
+            echo "deploy of $NEW failed"
+            docker compose logs --tail=50 $SVC
+
+            if [ -z "$PREV" ] || [ "$PREV" = "$NEW" ]; then
+              echo "no previous image to roll back to"
+              exit 1
+            fi
+
+            echo "rolling back to $PREV"
+            export APP_IMAGE=$PREV
+            if docker compose up -d $SVC && healthy; then
+              echo "rolled back to $PREV"
+            else
+              echo "rollback is not healthy either"
+              docker compose logs --tail=50 $SVC
+            fi
+            exit 1
+
+  # From outside: DNS, TLS and the host nginx in front of the container the
+  # deploy job already checked on loopback.
+  verify:
+    needs: deploy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Public health check
+        run: |
+          curl -fsS --retry 10 --retry-delay 6 --retry-all-errors --max-time 10 \
+            "$PRODUCTION_URL/healthz"

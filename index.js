@@ -248,6 +248,12 @@ function authenticate(req, res, next) {
     next();
 }
 
+// Liveness probe for the deploy and the public check. No auth and no DB, so an outage of
+// Metakocka or SQLite never triggers a rollback.
+app.get("/healthz", (req, res) => {
+    res.json({ ok: true, version: process.env.APP_VERSION || "dev" });
+});
+
 // GET endpoint to check server uptime / health
 app.get("/api/v1/uptime", (req, res) => {
     // Respond with a simple success message

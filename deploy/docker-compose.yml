@@ -1,0 +1,14 @@
+# Production compose for /data/stack/apps/time-4-action/mk-automation on the VM.
+# CI exports APP_IMAGE=ghcr.io/time-4-action/t4a-mk-automation:<commit sha>;
+# without it this runs :latest. The VM never builds: images come from GHCR.
+# Copy changes to the server by hand; the deploy only swaps images.
+services:
+  t4a-mk-automation:
+    image: ${APP_IMAGE:-ghcr.io/time-4-action/t4a-mk-automation:latest}
+    container_name: t4a-mk-automation
+    ports:
+      - "3000:3000"
+    # .env, cron.json, patrik.db and public/ live here (see the Dockerfile ENVs).
+    volumes:
+      - /data/stack/apps/time-4-action/mk-automation:/data
+    restart: unless-stopped
