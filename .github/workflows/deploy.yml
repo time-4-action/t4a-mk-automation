@@ -34,6 +34,9 @@ env:
   TAG: ${{ github.ref_name == 'main' && github.sha || format('dev-{0}', github.sha) }}
   # Moving tag the server's compose file falls back to.
   CHANNEL: ${{ github.ref_name == 'main' && 'latest' || 'dev' }}
+  # Host port the server's compose publishes on loopback, for the health check below.
+  # The dev VM hosts several apps, so each gets its own (see deploy/docker-compose.dev.yml).
+  HOST_PORT: ${{ github.ref_name == 'main' && '3000' || '13010' }}
   # Overridable with the PRODUCTION_URL / DEV_URL repository variables.
   PUBLIC_URL: ${{ github.ref_name == 'main' && (vars.PRODUCTION_URL || 'https://mkauto.time-4-action.com') || (vars.DEV_URL || 'https://mkauto.dev.time-4-action.com') }}
 
@@ -141,7 +144,7 @@ jobs:
 
             healthy() {
               for i in $(seq 1 30); do
-                curl -fsS http://127.0.0.1:3000/healthz >/dev/null && return 0
+                curl -fsS http://127.0.0.1:${{ env.HOST_PORT }}/healthz >/dev/null && return 0
                 sleep 2
               done
               return 1
