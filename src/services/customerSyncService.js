@@ -21,11 +21,6 @@
 const axios = require("axios");
 const config = require("../../config/config.json");
 
-const COMPANY_ID_TO_NAME = {
-    [process.env.MK_COMPANY_ID_T4A]: "T4A",
-    [process.env.MK_COMPANY_ID_CREAGLOBE]: "CREAGLOBE"
-};
-
 // ── normalisation helpers ────────────────────────────────────────────────────
 
 /** Tax numbers: strip whitespace, upper-case (e.g. "si 1234 5678" → "SI12345678"). */

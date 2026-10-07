@@ -24,8 +24,8 @@ merge `main` back into `dev` afterwards.
 | Public check | `https://mkauto.dev.time-4-action.com/healthz` (`DEV_URL` variable) | `https://mkauto.time-4-action.com/healthz` (`PRODUCTION_URL` variable) |
 | `APP_ENV` in `/data/.env` | **not set** | `production` |
 
-**check** runs on every pull request and every push to `dev` or `main`: `npm ci`, a
-`node --check` syntax pass over every tracked `.js` file, and a full
+**check** runs on every pull request and every push to `dev` or `main`: `npm ci`,
+`npm run lint` (ESLint, `eslint.config.js`), and a full
 `docker build` (not pushed), so a broken Dockerfile or a native module
 (`better-sqlite3`) that no longer installs fails the pull request. A newer push
 to a pull request cancels its running check; runs on `main` are queued, so
