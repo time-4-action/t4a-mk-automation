@@ -11,7 +11,9 @@ const express = require("express");
 const { isValidCron } = require("cron-validator");
 const { CronExpressionParser } = require("cron-parser");
 const Database = require('better-sqlite3');
+// eslint-disable-next-line no-unused-vars -- used by the retired ProMode block (warehouse sync, Step 2)
 const csv = require('csv-parser');
+// eslint-disable-next-line no-unused-vars -- used by the retired ProMode block (warehouse sync, Step 2)
 const { Readable } = require('stream');
 
 // Local modules
@@ -20,7 +22,6 @@ const { loadCronExpression } = require("./cron");
 // unless APP_ENV=production, and applies MK_BASE_URL.
 const { IS_PRODUCTION } = require("./src/config/envGuard");
 const config = require("./config/config.json");
-const { error } = require("console");
 const { productsSync, PRODUCTS_SYNC_PARAMS } = require("./src/services/productSyncService");
 const { customersSync } = require("./src/services/customerSyncService");
 const { pricelistsSync, listPricelists, suggestMappings } = require("./src/services/pricelistSyncService");
@@ -1605,6 +1606,7 @@ async function savePricelistSyncFile(result, fileTimestamp, sourceCompany, targe
     }
 }
 
+// eslint-disable-next-line no-unused-vars -- used by the retired ProMode block (warehouse sync, Step 2)
 function sumByProductCode(data) {
     return Object.values(
         data.reduce((acc, item) => {

@@ -1,14 +1,20 @@
-# check -> deploy -> verify.
+# check -> image -> deploy -> verify. Build once, promote the same image.
 #
-# Checks every pull request and every push. A green check on `dev` or `main`
-# builds the image, pushes it to GHCR and rolls that branch's server onto that
-# exact SHA over SSH, rolling back to the previous image if it does not come up
-# healthy on that commit. `verify` then checks the public URL.
+#   pull request  lint + a Docker build that is not pushed.
+#   push to dev   build the image ONCE, push it as :<sha>, deploy it to the dev VM by digest and
+#                 check it from outside. Only then is it tagged :<sha>-verified (and :dev).
+#   push to main  NO build. Find the dev commit with exactly main's code (same git tree, so the
+#                 dev -> main merge commit maps to the dev tip) whose image passed dev, and deploy
+#                 that same digest to production; tag it :latest once production is verified.
 #
-#   dev  -> development env, DEV_DEPLOY_* secrets,  :dev-<sha> + :dev,  mkauto.dev.time-4-action.com
-#   main -> production env,  PROD_DEPLOY_* secrets, :<sha> + :latest,   mkauto.time-4-action.com
+# Production therefore runs byte-for-byte the image that was verified on dev. Code that never
+# went through dev (a direct push to main) has no verified image and fails the `image` job.
 #
-# The VMs only pull; see docs/deployment.md.
+#   dev  -> development env, DEV_DEPLOY_* secrets,  mkauto.dev.time-4-action.com
+#   main -> production env,  PROD_DEPLOY_* secrets, mkauto.time-4-action.com
+#
+# The image is environment-neutral: production vs dev is decided at runtime by APP_ENV in the
+# server's /data/.env (src/config/envGuard.js). The VMs only pull; see docs/deployment.md.
 name: ci
 on:
   push:
@@ -16,9 +22,8 @@ on:
   pull_request:
   workflow_dispatch:
 
-# A newer push to the same pull request supersedes the running check. On main
-# runs are never cancelled, only queued, so an older commit can never be
-# deployed over a newer one.
+# A newer push to the same pull request supersedes the running check. On branches runs are
+# never cancelled, only queued, so an older commit can never be deployed over a newer one.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -28,17 +33,13 @@ permissions:
 
 env:
   IMAGE: ghcr.io/time-4-action/t4a-mk-automation
-  # Everything below differs per branch: main is production, anything else (only dev
-  # reaches the deploy job) is development.
-  # Image tag; dev ones are prefixed so a dev build can never be mistaken for a release.
-  TAG: ${{ github.ref_name == 'main' && github.sha || format('dev-{0}', github.sha) }}
-  # Moving tag the server's compose file falls back to.
-  CHANNEL: ${{ github.ref_name == 'main' && 'latest' || 'dev' }}
-  # Host port the server's compose publishes on loopback, for the health check below.
+  # Host port the server's compose publishes, for the health check on the VM
   # The dev VM hosts several apps, so each gets its own (see deploy/docker-compose.dev.yml).
   HOST_PORT: ${{ github.ref_name == 'main' && '3000' || '13010' }}
   # Overridable with the PRODUCTION_URL / DEV_URL repository variables.
   PUBLIC_URL: ${{ github.ref_name == 'main' && (vars.PRODUCTION_URL || 'https://mkauto.time-4-action.com') || (vars.DEV_URL || 'https://mkauto.dev.time-4-action.com') }}
+  # What /healthz must report as `env` (APP_ENV=production only in production's /data/.env).
+  EXPECTED_ENV: ${{ github.ref_name == 'main' && 'production' || 'development' }}
 
 jobs:
   check:
@@ -53,31 +54,108 @@ jobs:
           cache: npm
 
       - run: npm ci --no-audit --no-fund
-      # There is no test suite yet; a syntax error anywhere still fails here
-      # rather than in the container on the VM.
-      - name: Syntax check
-        run: |
-          git ls-files '*.js' ':!:public/**' | xargs -n1 node --check
-      # The same build the deploy runs, so a broken Dockerfile or a native
-      # module that no longer installs fails the pull request, not the deploy.
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/build-push-action@v7
+      # ESLint (eslint.config.js): syntax errors, undefined names, unused and
+      # unreachable code, in the server and the public/ scripts. There is no
+      # test suite yet, so this is what fails a broken change before the VM does.
+      - run: npm run lint
+
+      # Pull requests only: proves the Dockerfile and native modules (better-sqlite3) still build
+      # before merge. On dev the `image` job builds anyway, and main never builds.
+      - if: github.event_name == 'pull_request'
+        uses: docker/setup-buildx-action@v4
+      - if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v7
         with:
           push: false
           platforms: linux/amd64
           cache-from: type=gha
 
-  deploy:
+  # Produces the image to deploy as an immutable reference (image@sha256:...) plus the commit it
+  # was built from, which the server and the public health check must then report.
+  image:
     needs: check
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     runs-on: ubuntu-24.04
-    # The *_DEPLOY_* SSH secrets are organization secrets. GHCR needs none:
-    # the job's own GITHUB_TOKEN pushes the image and lets the VM pull it.
-    # Each environment only accepts its own branch (repository settings).
-    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
+    outputs:
+      ref: ${{ steps.build.outputs.ref || steps.promote.outputs.ref }}
+      version: ${{ steps.build.outputs.version || steps.promote.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # main looks through dev's history for the commit with the same tree.
+          fetch-depth: 0
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---- dev: build once ------------------------------------------------------------------
+
+      - if: github.ref_name == 'dev'
+        id: buildpush
+        uses: docker/build-push-action@v7
+        with:
+          push: true
+          platforms: linux/amd64
+          # GIT_SHA is baked in as APP_VERSION, which the server and /healthz report.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - if: github.ref_name == 'dev'
+        id: build
+        env:
+          DIGEST: ${{ steps.buildpush.outputs.digest }}
+        run: |
+          echo "ref=$IMAGE@$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "version=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          echo "built $IMAGE@$DIGEST from $GITHUB_SHA"
+
+      # ---- main: promote, never build -------------------------------------------------------
+
+      - if: github.ref_name == 'main'
+        id: promote
+        run: |
+          TREE=$(git rev-parse "HEAD^{tree}")
+          echo "main $GITHUB_SHA has tree $TREE; looking for a verified dev image with the same code"
+          SOURCE=""
+          for c in $(git log --format='%H %T' -n 500 origin/dev | awk -v t="$TREE" '$2 == t { print $1 }'); do
+            if docker buildx imagetools inspect "$IMAGE:$c-verified" >/dev/null 2>&1; then
+              SOURCE=$c; break
+            fi
+          done
+          if [ -z "$SOURCE" ]; then
+            echo "::error::no dev commit with main's exact code has a verified image ($IMAGE:<sha>-verified). Promote through dev: merge into dev, let it deploy green, then open dev -> main."
+            exit 1
+          fi
+          DIGEST=$(docker buildx imagetools inspect "$IMAGE:$SOURCE-verified" --format '{{json .Manifest}}' | jq -r .digest)
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = null ]; then
+            echo "::error::could not read digest of $IMAGE:$SOURCE-verified"; exit 1
+          fi
+          echo "ref=$IMAGE@$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "version=$SOURCE" >> "$GITHUB_OUTPUT"
+          echo "promoting $IMAGE@$DIGEST (built and verified on dev from $SOURCE)"
+
+  deploy:
+    needs: image
+    runs-on: ubuntu-24.04
+    # The *_DEPLOY_* SSH secrets are organization secrets. GHCR needs none: the job's own
+    # GITHUB_TOKEN lets the VM pull. Each environment only accepts its own branch (repository
+    # settings); production can additionally require a reviewer to approve the deploy.
+    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+    permissions:
+      contents: read
+      packages: read
     concurrency:
       group: deploy-${{ github.ref_name == 'main' && 'prod' || 'dev' }}
       cancel-in-progress: false
@@ -90,29 +168,6 @@ jobs:
           HOST: ${{ github.ref_name == 'main' && secrets.PROD_DEPLOY_HOST || '' }}${{ github.ref_name != 'main' && secrets.DEV_DEPLOY_HOST || '' }}
         run: |
           [ -n "$HOST" ] || { echo "::error::deploy host secret for ${{ github.ref_name }} is empty or not shared with this repository"; exit 1; }
-
-      - uses: actions/checkout@v7
-
-      - uses: docker/setup-buildx-action@v4
-
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/build-push-action@v7
-        with:
-          push: true
-          platforms: linux/amd64
-          # Baked in as APP_VERSION, which the server checks after rollout.
-          build-args: |
-            GIT_SHA=${{ github.sha }}
-          tags: |
-            ${{ env.IMAGE }}:${{ env.TAG }}
-            ${{ env.IMAGE }}:${{ env.CHANNEL }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - uses: appleboy/ssh-action@v1
         env:
@@ -130,8 +185,9 @@ jobs:
           script: |
             set -u
             cd /data/stack/apps/time-4-action/mk-automation || exit 1
-            SHA=${{ github.sha }}
-            NEW=${{ env.IMAGE }}:${{ env.TAG }}
+            # Pinned by digest: exactly the image the `image` job produced, never a moved tag.
+            NEW=${{ needs.image.outputs.ref }}
+            VERSION=${{ needs.image.outputs.version }}
             SVC=t4a-mk-automation
 
             # The image the service runs now is what a failed deploy goes back to.
@@ -140,33 +196,33 @@ jobs:
             if [ -n "$CID" ]; then
               PREV=$(docker inspect --format '{{.Config.Image}}' "$CID")
             fi
-            echo "running: ${PREV:-nothing}  deploying: $NEW"
+            echo "running: ${PREV:-nothing}"
+            echo "deploying: $NEW (commit $VERSION)"
 
+            # /healthz touches neither SQLite nor Metakocka, so their outages never cause a rollback.
             healthy() {
               for i in $(seq 1 30); do
                 curl -fsS http://127.0.0.1:${{ env.HOST_PORT }}/healthz >/dev/null && return 0
                 sleep 2
               done
+              curl -sS http://127.0.0.1:${{ env.HOST_PORT }}/healthz || true
               return 1
             }
 
-            # Healthy is not enough: the container must be running the image
-            # built from this commit, not one left over.
+            # Healthy is not enough: the container must be running the image built from this
+            # commit, not one left over.
             on_commit() {
               RUNNING=$(docker compose exec -T $SVC printenv APP_VERSION 2>/dev/null || true)
               echo "$SVC reports APP_VERSION=${RUNNING:-none}"
-              [ "$RUNNING" = "$SHA" ]
+              [ "$RUNNING" = "$VERSION" ]
             }
 
-            # The pull logs in with this job's GITHUB_TOKEN, which expires when
-            # the job ends, and logs out again on every exit: the VM keeps no
-            # registry credential. Rollback needs none, the previous image is local.
+            # The pull logs in with this job's GITHUB_TOKEN, which expires when the job ends, and
+            # logs out again on every exit: the VM keeps no registry credential.
             trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null || exit 1
 
             export APP_IMAGE=$NEW
-            # A failed pull changes nothing on the server. Retried, because
-            # registries have transient failures.
             for i in 1 2 3; do
               docker compose pull $SVC && break
               [ "$i" = 3 ] && exit 1
@@ -197,14 +253,47 @@ jobs:
             fi
             exit 1
 
-  # From outside: DNS, TLS and the host nginx in front of the container the
-  # deploy job already checked on loopback.
+  # From outside: DNS, TLS and the proxy in front of the container the deploy job already checked
+  # on loopback. The public /healthz must report the commit just deployed, running as this
+  # environment. Only then is the image marked as verified for it.
   verify:
-    needs: deploy
+    needs: [image, deploy]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REF: ${{ needs.image.outputs.ref }}
+      VERSION: ${{ needs.image.outputs.version }}
     steps:
       - name: Public health check
         run: |
-          curl -fsS --retry 10 --retry-delay 6 --retry-all-errors --max-time 10 \
-            "$PUBLIC_URL/healthz"
+          for _ in $(seq 1 10); do
+            BODY=$(curl -fsS --max-time 10 "$PUBLIC_URL/healthz" 2>&1) \
+              && echo "$BODY" | jq -e --arg v "$VERSION" --arg e "$EXPECTED_ENV" '.ok == true and .version == $v and .env == $e' >/dev/null \
+              && { echo "$BODY"; exit 0; }
+            sleep 6
+          done
+          echo "$BODY"
+          echo "::error::$PUBLIC_URL/healthz is not ok on version $VERSION in $EXPECTED_ENV"
+          exit 1
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Retags by digest; nothing is rebuilt or re-uploaded.
+      #   dev:  :<sha>-verified (what main may promote) and :dev (what dev runs now)
+      #   main: :latest (what production runs now; the server compose falls back to it)
+      - name: Mark image verified
+        run: |
+          if [ "$GITHUB_REF_NAME" = main ]; then
+            docker buildx imagetools create -t "$IMAGE:latest" "$REF"
+          else
+            docker buildx imagetools create -t "$IMAGE:$VERSION-verified" -t "$IMAGE:dev" "$REF"
+          fi
