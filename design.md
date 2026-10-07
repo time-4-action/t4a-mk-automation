@@ -396,8 +396,9 @@ Path overrides (set by the Dockerfile, all pointing into one mounted volume):
 `get/add/update_partner`), the Google Drive macro URLs and the ProMode CSV URL.
 
 Run: `npm run dev` / `npm start` (port 3000). Docker: `node:24-alpine`, all
-mutable state on `/data` (`docker-compose.yml` mounts `/var/storage/patrik`),
-`update.sh` builds and pushes `time4action/t4a-mk-automation`.
+mutable state on `/data`. CI (`.github/workflows/deploy.yml`) builds
+`ghcr.io/time-4-action/t4a-mk-automation` on every push to `main` and rolls it
+out to the VM; see `docs/deployment.md`.
 
 `docs/` carries the Metakocka REST reference (partners, products, documents,
 warehouse stock, reports…) plus this project's own notes: `customer_sync.md`,

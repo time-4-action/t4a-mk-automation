@@ -1,9 +1,9 @@
+# Local build. The server runs deploy/docker-compose.yml, which pulls from GHCR.
 services:
-  patrik-api:
-    image: etiamsi/patrik-metakocka-automation-api:latest
-    container_name: patrik-api
+  t4a-mk-automation:
+    build: .
+    image: ghcr.io/time-4-action/t4a-mk-automation:local
     ports:
       - "3000:3000"
     volumes:
-      - /var/storage/patrik:/data
-    restart: unless-stopped
+      - ./tmp/data:/data

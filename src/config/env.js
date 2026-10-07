@@ -12,6 +12,5 @@ dotenv.config({ path: envPath });
 
 // Optional: log which env file was loaded
 console.log(`Loaded environment variables from ${envPath}`);
-console.log(process.env)
 
 // No need to export anything: process.env is global in Node
