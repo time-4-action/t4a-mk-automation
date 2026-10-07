@@ -16,6 +16,9 @@ const { Readable } = require('stream');
 
 // Local modules
 const { loadCronExpression } = require("./cron");
+// After cron.js has loaded the .env and before any service runs: refuses production targets
+// unless APP_ENV=production, and applies MK_BASE_URL.
+const { IS_PRODUCTION } = require("./src/config/envGuard");
 const config = require("./config/config.json");
 const { error } = require("console");
 const { productsSync, PRODUCTS_SYNC_PARAMS } = require("./src/services/productSyncService");
@@ -251,7 +254,7 @@ function authenticate(req, res, next) {
 // Liveness probe for the deploy and the public check. No auth and no DB, so an outage of
 // Metakocka or SQLite never triggers a rollback.
 app.get("/healthz", (req, res) => {
-    res.json({ ok: true, version: process.env.APP_VERSION || "dev" });
+    res.json({ ok: true, version: process.env.APP_VERSION || "dev", env: IS_PRODUCTION ? "production" : "development" });
 });
 
 // GET endpoint to check server uptime / health

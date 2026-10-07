@@ -1,0 +1,25 @@
+# Dev compose for /data/stack/apps/time-4-action/mk-automation on the DEV VM (save it there as
+# docker-compose.yml). CI exports APP_IMAGE=ghcr.io/time-4-action/t4a-mk-automation:dev-<sha>;
+# without it this runs :dev. Traefik on the dev VM routes mkauto.dev.time-4-action.com here
+# and provides the certificate; see docs/deployment.md "Dev environment".
+services:
+  t4a-mk-automation:
+    image: ${APP_IMAGE:-ghcr.io/time-4-action/t4a-mk-automation:dev}
+    container_name: t4a-mk-automation
+    # Loopback only, for CI's health check on the VM. The public way in is Traefik.
+    ports:
+      - "127.0.0.1:3000:3000"
+    # .env (devmainsi credentials, no APP_ENV), cron.json, patrik.db and public/ live here.
+    volumes:
+      - /data/stack/apps/time-4-action/mk-automation:/data
+    networks:
+      - web
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.mkauto.rule=Host(`mkauto.dev.time-4-action.com`)
+      - traefik.http.services.mkauto.loadbalancer.server.port=3000
+    restart: unless-stopped
+
+networks:
+  web:
+    external: true
