@@ -33,7 +33,7 @@ Dependabot PRs target `dev` and follow the same path.
 | `APP_ENV` | not set | `production` |
 
 `/healthz` (no auth, no DB) returns `{ ok, version, env }`; every page shows the version badge
-(`public/version.js`), amber `DEV · <sha>` outside production.
+(`public/version.js`), blue `DEV · <sha>` outside production.
 
 ## Safety lock — never weaken it
 

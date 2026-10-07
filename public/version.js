@@ -35,8 +35,8 @@
             if (env && env !== "production") {
                 badge.textContent = "DEV · " + shown;
                 badge.style.color = "#ffffff";
-                badge.style.background = "#d93025";
-                badge.style.borderColor = "#d93025";
+                badge.style.background = "#2f7de1";
+                badge.style.borderColor = "#2f7de1";
             } else {
                 badge.textContent = shown;
             }
