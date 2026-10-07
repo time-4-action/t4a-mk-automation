@@ -5,7 +5,10 @@
         "syncStockPath": "/sync_stock",
         "productUpdatePath": "/v1/json/product_update",
         "productListPath": "/v1/json/product_list",
-        "productAddPath": "/v1/json/product_add"
+        "productAddPath": "/v1/json/product_add",
+        "getPartnerPath": "/v1/get_partner",
+        "addPartnerPath": "/v1/add_partner",
+        "updatePartnerPath": "/v1/update_partner"
     },
     "googleDrive": {
         "macros": {

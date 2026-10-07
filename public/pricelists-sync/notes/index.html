@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patrik Pricelist Sync Notes</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&family=Orbitron:wght@400;700&display=swap"
+        rel="stylesheet">
+    <style>
+        body {
+            background: #121216;
+            color: #eee;
+            font-family: 'Montserrat', sans-serif !important;
+            padding: 2rem;
+            line-height: 1.6;
+        }
+
+        .logo-container { text-align: center; margin-bottom: 2rem; }
+        .logo-container img { width: 120px; height: auto; margin-bottom: 0.5rem; }
+
+        h1, h2, h3 {
+            font-family: 'Orbitron', sans-serif;
+            color: #00d4ff;
+            margin-bottom: 0.5rem;
+        }
+
+        h1 { font-size: 2rem; margin-bottom: 1rem; }
+        h2 { font-size: 1.5rem; margin-top: 1.5rem; }
+        h3 { font-size: 1.2rem; margin-top: 1rem; }
+
+        p { margin-bottom: 1rem; }
+        ul { margin-bottom: 1rem; padding-left: 1.2rem; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1rem;
+            background: rgba(30, 30, 35, 0.85);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        th, td { padding: 0.75rem 1rem; color: #ccc; text-align: left; }
+        th { background: rgba(0, 212, 255, 0.15); font-weight: 700; }
+        tr:nth-child(even) { background: rgba(255, 255, 255, 0.05); }
+
+        .important-note {
+            background-color: #330000;
+            border-left: 5px solid #ff0000;
+            padding: 1rem;
+            margin: 1rem 0;
+            color: #ff4d4d;
+            font-weight: 600;
+            border-radius: 5px;
+        }
+
+        .warning-note {
+            background-color: #331a00;
+            border-left: 5px solid #ffa500;
+            padding: 1rem;
+            margin: 1rem 0;
+            color: #ffcc66;
+            border-radius: 5px;
+        }
+
+        code { color: #00d4ff; font-family: 'Orbitron', monospace; }
+        a { color: #00d4ff; }
+        footer { margin-top: 3rem; font-size: 0.85rem; color: #777; text-align: center; }
+    </style>
+</head>
+
+<body>
+
+    <div class="logo-container">
+        <a href="/"><img src="https://imgs.pnvnet.si/img/615/301/75/2/c/www.patrikinternational.com/assets/page_info/0308183001671536508.png" alt="Time 4 Action Logo"></a>
+    </div>
+
+    <h1>Pricelist Sync — how it works</h1>
+
+    <p>
+        Copies <strong>product prices</strong> one way: <strong>T4A → CREAGLOBE</strong>. T4A is the single source of
+        truth and is never written to. Only the price-list pairs configured in the admin portal
+        (Automation → Pricelists) are ever touched.
+    </p>
+
+    <div class="important-note">
+        A price list's code does NOT identify the same list in the other company.
+        T4A <code>7</code> is "PP GOLD 2026" but CREAGLOBE <code>7</code> is "PP BRONZE 2026".
+        Nine codes overlap between the two companies and every single pairing is wrong.
+        Syncing by code would write GOLD prices into the BRONZE list — which is why nothing is synced
+        unless a person has explicitly mapped the pair.
+    </div>
+
+    <h2>Finding the price lists</h2>
+
+    <p>
+        Metakocka has <strong>no endpoint that lists price lists</strong>. The only way to see them is
+        <code>json/product_list</code> with <code>return_pricelist: true</code>: every product reports the lists it sits
+        on, with the list's code, title, currency, validity and its price definition. The service scans the whole
+        catalogue of each company and de-duplicates.
+    </p>
+
+    <div class="warning-note">
+        A price list carrying <strong>no products</strong> is invisible to this scan. A mapping whose target list was
+        not seen is refused by default — put one product on it in Metakocka, or tick
+        "allow unseen target" on that mapping.
+    </div>
+
+    <p>
+        A list's identity is the pair <code>(sales_purchase, count_code)</code>, not the code alone: Metakocka numbers
+        sales and purchase lists separately, so T4A code <code>1</code> is both "RRP 2025" (sales) and
+        "Partner price 2026" (purchase).
+    </p>
+
+    <h2>What a run does</h2>
+
+    <p>Products are matched by SKU (<code>code</code>), which lines up 1:1 between the two companies. For every mapped pair:</p>
+
+    <table>
+        <thead>
+            <tr><th>Situation</th><th>What happens</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>Priced in T4A, missing from the CREAGLOBE list</td><td><strong>Added</strong> with T4A's price</td></tr>
+            <tr><td>On both lists, a field T4A sets differs</td><td><strong>Updated</strong> to match T4A</td></tr>
+            <tr><td>On both lists, already identical</td><td>Left alone</td></tr>
+            <tr><td>On the CREAGLOBE list only</td><td><strong>Left alone</strong>, counted as "extra"</td></tr>
+            <tr><td>Product not in CREAGLOBE at all</td><td>Skipped — creating products is the Products sync's job</td></tr>
+        </tbody>
+    </table>
+
+    <p>
+        Fields are mirrored, not replaced: the payload is CREAGLOBE's current price definition overlaid with T4A's
+        fields. T4A wins on everything it defines; a field only CREAGLOBE has (a discount T4A does not set, say) is
+        carried through untouched. Change detection only looks at the fields T4A owns, so CREAGLOBE-only extras never
+        cause pointless writes.
+    </p>
+
+    <h2>The max-change rail</h2>
+
+    <p>
+        Each mapping can carry a <strong>max change %</strong>. Any single price moving further than that is refused and
+        reported instead of written.
+    </p>
+
+    <div class="warning-note">
+        This is not theoretical. On live data CREAGLOBE's "RRP 2025" held <code>2399</code> where T4A held
+        <code>1966,39</code> — exactly a &times;1.22 VAT factor, i.e. the two lists were not storing the same kind of
+        number. Syncing that pair blind would have cut 1093 prices by 18%. Always run a
+        <strong>Preview (dry run)</strong> before enabling a new pair.
+    </div>
+
+    <h2>Removals</h2>
+
+    <p>
+        Nothing is ever removed from a CREAGLOBE price list. Metakocka documents no reliable
+        "remove product from a price list" call, and the product may legitimately be CREAGLOBE-only. Extra rows are
+        counted per list so the drift stays visible, and cleaned up by hand in Metakocka if needed.
+    </p>
+
+    <h2>Endpoints</h2>
+
+    <table>
+        <thead><tr><th>Method</th><th>Endpoint</th><th>Auth</th></tr></thead>
+        <tbody>
+            <tr><td>GET</td><td><code>/api/v1/pricelists</code></td><td>yes</td></tr>
+            <tr><td>GET / PUT</td><td><code>/api/v1/pricelists/mappings</code></td><td>yes</td></tr>
+            <tr><td>POST</td><td><code>/api/v1/pricelists/sync</code> (<code>?dryRun=true</code>)</td><td>yes</td></tr>
+            <tr><td>GET</td><td><code>/api/v1/pricelists/sync/logs</code></td><td>no</td></tr>
+            <tr><td>GET / PUT</td><td><code>/api/v1/schedules/pricelist-sync</code></td><td>PUT only</td></tr>
+        </tbody>
+    </table>
+
+    <p><a href="/pricelists-sync">← Back to Pricelists Sync</a></p>
+
+    <footer>© 2025 Time 4 Action - AUTOMATION</footer>
+
+</body>
+
+</html>

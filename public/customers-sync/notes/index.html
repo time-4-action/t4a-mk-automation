@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patrik Customer Sync Notes</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&family=Orbitron:wght@400;700&display=swap"
+        rel="stylesheet">
+    <style>
+        body {
+            background: #121216;
+            color: #eee;
+            font-family: 'Montserrat', sans-serif !important;
+            padding: 2rem;
+            line-height: 1.6;
+        }
+
+        .logo-container { text-align: center; margin-bottom: 2rem; }
+        .logo-container img { width: 120px; height: auto; margin-bottom: 0.5rem; }
+
+        h1, h2, h3 {
+            font-family: 'Orbitron', sans-serif;
+            color: #00d4ff;
+            margin-bottom: 0.5rem;
+        }
+
+        h1 { font-size: 2rem; margin-bottom: 1rem; }
+        h2 { font-size: 1.5rem; margin-top: 1.5rem; }
+        h3 { font-size: 1.2rem; margin-top: 1rem; }
+
+        p { margin-bottom: 1rem; }
+        ul { margin-bottom: 1rem; padding-left: 1.2rem; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1rem;
+            background: rgba(30, 30, 35, 0.85);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        th, td { padding: 0.75rem 1rem; color: #ccc; text-align: left; }
+        th { background: rgba(0, 212, 255, 0.15); font-weight: 700; }
+        tr:nth-child(even) { background: rgba(255, 255, 255, 0.05); }
+
+        .important-note {
+            background-color: #330000;
+            border-left: 5px solid #ff0000;
+            padding: 1rem;
+            margin: 1rem 0;
+            color: #ff4d4d;
+            font-weight: 600;
+            border-radius: 5px;
+        }
+
+        .warning-note {
+            background-color: #331a00;
+            border-left: 5px solid #ff9500;
+            padding: 1rem;
+            margin: 1rem 0;
+            color: #ffb84d;
+            font-weight: 600;
+            border-radius: 5px;
+        }
+
+        .ok-note {
+            background-color: #002b1a;
+            border-left: 5px solid #00cc88;
+            padding: 1rem;
+            margin: 1rem 0;
+            color: #4dffb8;
+            font-weight: 600;
+            border-radius: 5px;
+        }
+
+        footer { margin-top: 3rem; font-size: 0.85rem; color: #777; text-align: center; }
+
+        pre {
+            background: rgba(0, 0, 0, 0.6);
+            padding: 1rem;
+            border-radius: 8px;
+            overflow-x: auto;
+            color: #00ffcc;
+        }
+        code { color:#00ffcc; }
+    </style>
+</head>
+
+<body>
+    <div class="logo-container">
+        <a href="/">
+            <img src="https://imgs.pnvnet.si/img/615/301/75/2/c/www.patrikinternational.com/assets/page_info/0308183001671536508.png"
+                alt="Time 4 Action Logo">
+        </a>
+    </div>
+
+    <h2>Overview</h2>
+    <p>
+        Customer Sync mirrors customers (Metakocka <strong>partners</strong>) one way — from
+        <strong>T4A → CREAGLOBE</strong>. T4A is the single source of truth and is never written to.
+        Customers that already exist in CREAGLOBE are updated to match T4A; customers that are missing
+        are created.
+    </p>
+
+    <div class="important-note">
+        ⚠ <strong>No shared key.</strong> Unlike products (which share a <code>code</code>), partners have
+        <strong>no</strong> business key shared between the two companies — the partner <code>count_code</code> and
+        <code>mk_id</code> are per-company internal values (measured: <strong>0</strong> count_code overlap). Customers are
+        therefore matched by <strong>tax number</strong> first, and by <strong>exact name</strong> as a fallback.
+    </div>
+
+    <div class="ok-note">
+        ✔ <strong>Preview (Dry Run).</strong> Because a mismatch could create a duplicate customer, use
+        <strong>Preview (Dry Run)</strong> to compute exactly what a run would create/update
+        <strong>without writing anything</strong> to CREAGLOBE. The plan is recorded in the admin run history.
+    </div>
+
+    <h2>How Matching Works</h2>
+    <ul>
+        <li><strong>Tax number</strong> (normalised: spaces stripped, upper-cased) — primary key, reliable for businesses.</li>
+        <li><strong>Exact name</strong> (normalised: trimmed, lower-cased, whitespace collapsed) — fallback for private
+            consumers with no tax number.</li>
+        <li>A T4A customer that matches an existing CREAGLOBE one → <strong>updated</strong> using CREAGLOBE's own
+            <code>mk_id</code>.</li>
+        <li>A T4A customer that matches nothing → <strong>created</strong> in CREAGLOBE.</li>
+    </ul>
+
+    <h2>Contacts &amp; Delivery Addresses</h2>
+    <p>Contacts and delivery addresses are synced too, but their IDs differ per company, so they are matched by
+        <strong>content</strong> so that repeat runs don't duplicate them:</p>
+    <ul>
+        <li><strong>Billing address (Račun)</strong> is reconciled <em>by role</em> — CREAGLOBE's existing billing address is
+            updated in place, never duplicated.</li>
+        <li><strong>Other delivery addresses</strong> are matched by <code>type + street + post number + city</code>; missing
+            ones are added.</li>
+        <li><strong>Contacts</strong> are matched by <code>name + email + phone</code>; missing ones are added and attached to
+            CREAGLOBE's billing address.</li>
+    </ul>
+
+    <h2>Key Features</h2>
+    <ul>
+        <li>Strictly one-way (T4A → CREAGLOBE). T4A is never modified.</li>
+        <li>Configurable schedule (15 min, hourly, every 3 hours, daily) and day-of-week selection.</li>
+        <li>Run now, or preview with a dry run first.</li>
+        <li>Every run is recorded with per-customer error details in the admin run history.</li>
+    </ul>
+
+    <h2>Synced Partner Fields</h2>
+    <table>
+        <thead>
+            <tr><th>Field</th><th>Included in Sync</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>customer (name)</td><td>✔️</td></tr>
+            <tr><td>tax_id_number</td><td>✔️ (also a match key)</td></tr>
+            <tr><td>registration_number</td><td>✔️</td></tr>
+            <tr><td>business_entity</td><td>✔️</td></tr>
+            <tr><td>taxpayer</td><td>✔️</td></tr>
+            <tr><td>foreign_county</td><td>✔️</td></tr>
+            <tr><td>buyer</td><td>✔️</td></tr>
+            <tr><td>supplier</td><td>✔️</td></tr>
+            <tr><td>billing address (Račun)</td><td>✔️ (updated in place)</td></tr>
+            <tr><td>delivery addresses</td><td>✔️ (matched by content)</td></tr>
+            <tr><td>contacts</td><td>✔️ (matched by content)</td></tr>
+            <tr><td>count_code</td><td>❌ (per-company internal)</td></tr>
+            <tr><td>mk_id</td><td>❌ (per-company internal)</td></tr>
+        </tbody>
+    </table>
+
+    <div class="warning-note">
+        ⚠ <strong>Name-match risk.</strong> Two different customers that share the same name (and have no tax number) can be
+        treated as the same partner. Always run a <strong>Preview</strong> after large changes to sanity-check the created /
+        updated counts before a real run.
+    </div>
+
+    <h2>API</h2>
+    <table>
+        <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+        <tbody>
+            <tr><td>POST</td><td>/api/v1/customers/sync</td><td>Run now (add <code>?dryRun=true</code> to preview)</td></tr>
+            <tr><td>GET</td><td>/api/v1/customers/sync/logs</td><td>Latest run files + created/updated counts</td></tr>
+            <tr><td>PUT</td><td>/api/v1/schedules/customer-sync</td><td>Update cron schedule</td></tr>
+            <tr><td>GET</td><td>/api/v1/schedules/customer-sync</td><td>Fetch cron schedule</td></tr>
+        </tbody>
+    </table>
+
+    <footer>© 2025 Time 4 Action - DOCUMENTATION</footer>
+</body>
+
+</html>
