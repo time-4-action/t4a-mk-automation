@@ -134,7 +134,7 @@ network.
 For this app, in `/data/stack/apps/time-4-action/mk-automation` on the dev VM,
 owned by `deploy`:
 
-- `docker-compose.yml` = `deploy/docker-compose.dev.yml`;
+- `docker-compose.yml` = `deploy/docker-compose.dev.yml` (health-check port `127.0.0.1:13010`, since other dev apps use 3000);
 - `.env` from `deploy/dev.env.example`: devmainsi credentials for **both** T4A
   and CREAGLOBE, no `APP_ENV`, no heartbeat. Never copy the production `.env`;
 - `cron.json` (a copy of the repo's is fine — the schedules sync devmainsi).
