@@ -87,17 +87,16 @@
         }
         code { color:#00ffcc; }
 
-        /* Check / cross marks: text glyphs (no platform emoji colour), same box so they line up */
+        /* Check / cross marks: identical SVG boxes, so they line up exactly whatever the font */
         .check, .cross {
             display: inline-block;
-            width: 1.2em;
-            text-align: center;
-            line-height: 1;
-            vertical-align: middle;
-            font-weight: 700;
+            width: 1em;
+            height: 1em;
+            vertical-align: -0.15em;
+            background: no-repeat center / contain;
         }
-        .check { color: #2ecc71; }
-        .cross { color: #ff4d4d; }
+        .check { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8.5l3.2 3.2L13 4.8' fill='none' stroke='%232ecc71' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+        .cross { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 4l8 8M12 4l-8 8' fill='none' stroke='%23ff4d4d' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E"); }
     </style>
 </head>
 
@@ -166,19 +165,19 @@
             <tr><th>Field</th><th>Included in Sync</th></tr>
         </thead>
         <tbody>
-            <tr><td>customer (name)</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>tax_id_number</td><td><span class="check">&#x2714;&#xFE0E;</span> (also a match key)</td></tr>
-            <tr><td>registration_number</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>business_entity</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>taxpayer</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>foreign_county</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>buyer</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>supplier</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>billing address (Račun)</td><td><span class="check">&#x2714;&#xFE0E;</span> (updated in place)</td></tr>
-            <tr><td>delivery addresses</td><td><span class="check">&#x2714;&#xFE0E;</span> (matched by content)</td></tr>
-            <tr><td>contacts</td><td><span class="check">&#x2714;&#xFE0E;</span> (matched by content)</td></tr>
-            <tr><td>count_code</td><td><span class="cross">&#x2718;&#xFE0E;</span> (per-company internal)</td></tr>
-            <tr><td>mk_id</td><td><span class="cross">&#x2718;&#xFE0E;</span> (per-company internal)</td></tr>
+            <tr><td>customer (name)</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>tax_id_number</td><td><span class="check" role="img" aria-label="Yes"></span> (also a match key)</td></tr>
+            <tr><td>registration_number</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>business_entity</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>taxpayer</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>foreign_county</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>buyer</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>supplier</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>billing address (Račun)</td><td><span class="check" role="img" aria-label="Yes"></span> (updated in place)</td></tr>
+            <tr><td>delivery addresses</td><td><span class="check" role="img" aria-label="Yes"></span> (matched by content)</td></tr>
+            <tr><td>contacts</td><td><span class="check" role="img" aria-label="Yes"></span> (matched by content)</td></tr>
+            <tr><td>count_code</td><td><span class="cross" role="img" aria-label="No"></span> (per-company internal)</td></tr>
+            <tr><td>mk_id</td><td><span class="cross" role="img" aria-label="No"></span> (per-company internal)</td></tr>
         </tbody>
     </table>
 
