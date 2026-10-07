@@ -53,11 +53,10 @@ jobs:
           cache: npm
 
       - run: npm ci --no-audit --no-fund
-      # There is no test suite yet; a syntax error anywhere still fails here
-      # rather than in the container on the VM.
-      - name: Syntax check
-        run: |
-          git ls-files '*.js' ':!:public/**' | xargs -n1 node --check
+      # ESLint (eslint.config.js): syntax errors, undefined names, unused and
+      # unreachable code, in the server and the public/ scripts. There is no
+      # test suite yet, so this is what fails a broken change before the VM does.
+      - run: npm run lint
       # The same build the deploy runs, so a broken Dockerfile or a native
       # module that no longer installs fails the pull request, not the deploy.
       - uses: docker/setup-buildx-action@v4

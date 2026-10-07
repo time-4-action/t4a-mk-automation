@@ -57,12 +57,17 @@ npm start              # NODE_ENV=production
 docker compose up --build   # local image build (root docker-compose.yml, data in ./tmp/data)
 ```
 
-There is no test suite or linter. CI's `check` job runs `npm ci`, `node --check` on every tracked `.js`
-file and a full `docker build`; run the same locally before opening a PR:
+There is no test suite. CI's `check` job runs `npm ci`, `npm run lint` (ESLint, `eslint.config.js`:
+`eslint:recommended` — undefined names, unused and unreachable code, syntax errors) and a full
+`docker build`; run lint locally before opening a PR:
 
 ```bash
-git ls-files '*.js' ':!:public/**' | xargs -n1 node --check
+npm run lint
 ```
+
+Fix lint findings rather than disabling rules. The only `eslint-disable` comments are on the imports and
+helper kept for the retired ProMode block in `index.js`. Inline `<script>` blocks in `public/*.html` are not
+linted.
 
 ## CI/CD
 
