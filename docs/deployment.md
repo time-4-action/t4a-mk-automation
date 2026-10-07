@@ -1,56 +1,69 @@
 # Deployment
 
-`.github/workflows/deploy.yml` (workflow `ci`) runs `check` → `deploy` → `verify`.
+`.github/workflows/deploy.yml` (workflow `ci`) runs `check` → `image` → `deploy` →
+`verify`. The image is **built once, on `dev`, and production gets that same image** —
+byte-for-byte what was verified on the dev server, never a rebuild.
 
 There are two environments, one per long-lived branch:
 
 ```
-feature/fix branch ── PR ──► dev ── push ──► build :dev-<sha> ──► DEV VM  ──► mkauto.dev.time-4-action.com
+feature/fix branch ── PR ──► dev ── push ──► build :<sha> ──► DEV VM ──► verified ──► tag :<sha>-verified
                                │
                                └── PR dev → main (once tested on dev)
-                                                     main ── push ──► build :<sha> ──► PROD VM ──► mkauto.time-4-action.com
+                                         main ── push ──► NO build: same digest ──► PROD VM ──► tag :latest
 ```
 
 Feature pull requests target `dev`. When a batch has been tried on dev, a pull
-request from `dev` into `main` releases it. Hotfixes may go straight to `main`;
-merge `main` back into `dev` afterwards.
+request from `dev` into `main` releases it. **Hotfixes go through `dev` too**
+(PR into `dev`, wait for it to deploy green, then `dev` → `main`): code that was
+never built and verified on `dev` has no image `main` may deploy, and the run
+fails before touching production.
 
 | | `dev` | `main` |
 |---|---|---|
 | GitHub environment | `development` | `production` |
-| Image tags | `:dev-<sha>`, `:dev` | `:<sha>`, `:latest` |
+| Image | built: `:<sha>` → `:<sha>-verified`, `:dev` | promoted digest → `:latest` |
 | SSH secrets | `DEV_DEPLOY_*` | `PROD_DEPLOY_*` |
 | Server compose | `deploy/docker-compose.dev.yml` | `deploy/docker-compose.yml` |
 | Public check | `https://mkauto.dev.time-4-action.com/healthz` (`DEV_URL` variable) | `https://mkauto.time-4-action.com/healthz` (`PRODUCTION_URL` variable) |
 | `APP_ENV` in `/data/.env` | **not set** | `production` |
 
-**check** runs on every pull request and every push to `dev` or `main`: `npm ci`,
-`npm run lint` (ESLint, `eslint.config.js`), and a full
-`docker build` (not pushed), so a broken Dockerfile or a native module
-(`better-sqlite3`) that no longer installs fails the pull request. A newer push
-to a pull request cancels its running check; runs on `main` are queued, so
-pushes deploy strictly in order.
+The image is environment-neutral: whether it behaves as production is decided at
+runtime by `APP_ENV` in `/data/.env` (see Safety lock). Don't add per-environment
+build args — that would break build-once.
 
-**deploy** runs only on `dev` and `main` after a green check, one at a time per
-environment. The steps below describe `main`; `dev` is the same with the values
-from the table above. It builds the
-image on GitHub Actions with the commit SHA baked in as `APP_VERSION`, pushes
-`ghcr.io/time-4-action/t4a-mk-automation:<sha>` and `:latest` to GitHub
-Container Registry, then SSHes to the VM as `deploy` and, in
+**check** runs on every pull request and every push: `npm ci` and `npm run lint`
+(ESLint, `eslint.config.js`). On pull requests it also runs a full `docker build`
+(not pushed), so a broken Dockerfile or a native module (`better-sqlite3`) that
+no longer installs fails the pull request. A newer push to a pull request cancels
+its running check; runs on `main` are queued, so pushes deploy strictly in order.
+
+**image** produces the image to deploy as an immutable `image@sha256:…` reference
+plus the commit it was built from:
+
+- on `dev` it builds the image (the only build) with the commit SHA baked in as
+  `APP_VERSION` and pushes `ghcr.io/time-4-action/t4a-mk-automation:<sha>`;
+- on `main` it builds nothing: it takes main's git tree, finds the `dev` commit
+  with the identical tree (the `dev` → `main` merge commit has the same tree as
+  the `dev` tip) and an image tagged `:<sha>-verified`, and uses that digest.
+
+**deploy** runs one at a time per environment. It SSHes to the VM as `deploy`
+and, in
 `/data/stack/apps/time-4-action/mk-automation`:
 
 1. records the image the running `t4a-mk-automation` container uses;
 2. logs in to `ghcr.io` with the job's own `GITHUB_TOKEN` (valid only while the
    job runs; logged out again on exit, so the VM stores no registry
    credential), `docker compose pull` (three attempts) and `docker compose up -d`
-   with `APP_IMAGE` exported to the new SHA;
+   with `APP_IMAGE` exported to the image digest;
 3. waits up to 60 s for `http://127.0.0.1:3000/healthz` to answer 200;
-4. checks the container reports `APP_VERSION` equal to the commit SHA.
+4. checks the container reports `APP_VERSION` equal to the image's source commit.
 
 If 3 or 4 fails it prints the logs, rolls back to the recorded image and fails
-the run. **verify** then requests `/healthz` on the public URL
-(`https://mkauto.time-4-action.com`, override with the `PRODUCTION_URL`
-repository variable).
+the run. **verify** then requests `/healthz` on the public URL and requires
+`ok: true`, `version` = the image's source commit and `env` = this environment
+(`development` / `production`). Only then is the image tagged — `:<sha>-verified`
+and `:dev` on dev (which makes it promotable), `:latest` in production.
 
 `/healthz` needs no API key and touches neither SQLite nor Metakocka, so an
 outage there never triggers a rollback.
@@ -60,7 +73,7 @@ The deploy only swaps images. Everything mutable — `.env`, `cron.json`,
 every deploy and rollback. The server copy of the compose file is
 `deploy/docker-compose.yml` (the root one is for local builds). To go back to an
 older release, re-run that commit's workflow, or on the server:
-`export APP_IMAGE=ghcr.io/time-4-action/t4a-mk-automation:<sha> && docker compose up -d`
+`export APP_IMAGE=ghcr.io/time-4-action/t4a-mk-automation:<sha>-verified && docker compose up -d`
 (a `docker login ghcr.io` first if the package is private).
 
 ## GitHub settings

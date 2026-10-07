@@ -15,8 +15,8 @@ feature branch  →  PR into dev  →  deploys to the DEV server  →  (tested) 
 3. **Merging into `dev` deploys to the dev server** (`https://mkauto.dev.time-4-action.com`). Check it there before promoting.
 4. **`dev` → `main` is a release**: a separate PR from `dev` into `main`, opened only when the user asks to release. Merging it deploys to production (`https://mkauto.time-4-action.com`).
 5. **Never push or commit directly to `dev` or `main`**, and never force-push them. Merges happen through PRs, by the user unless they ask otherwise.
-6. **Hotfix** (only when the user asks for one): branch off `main`, PR into `main`, then PR `main` back into `dev` so the branches don't diverge.
-7. After a merge, a deploy is only done when the `ci` run is green and `/healthz` on that environment reports the merge commit — check before saying it is deployed.
+6. **Hotfix** (only when the user asks for one): PR the fix into `dev`, let it deploy green there, then open `dev` → `main` right away. A PR straight into `main` cannot deploy: production only runs images that were built and verified on `dev`.
+7. After a merge, a deploy is only done when the `ci` run is green and `/healthz` on that environment reports the expected `version` — the commit the image was built from on `dev` (for a `dev` → `main` release, the `dev` tip, not the merge commit). Check before saying it is deployed.
 
 Dependabot PRs target `dev` and follow the same path.
 
@@ -26,7 +26,7 @@ Dependabot PRs target `dev` and follow the same path.
 |---|---|---|
 | Branch | `dev` | `main` |
 | URL | `https://mkauto.dev.time-4-action.com` | `https://mkauto.time-4-action.com` |
-| Image | `ghcr.io/time-4-action/t4a-mk-automation:dev-<sha>`, `:dev` | `…:<sha>`, `:latest` |
+| Image | built once: `ghcr.io/time-4-action/t4a-mk-automation:<sha>` → `:<sha>-verified`, `:dev` | no build: the same digest, promoted → `:latest` |
 | Server | dev VM, behind Traefik | production VM, behind nginx |
 | Compose | `deploy/docker-compose.dev.yml` (loopback port 13010) | `deploy/docker-compose.yml` (port 3000) |
 | Metakocka | `devmainsi.metakocka.si` (`MK_BASE_URL`) | `main.metakocka.si` |
@@ -58,8 +58,8 @@ docker compose up --build   # local image build (root docker-compose.yml, data i
 ```
 
 There is no test suite. CI's `check` job runs `npm ci`, `npm run lint` (ESLint, `eslint.config.js`:
-`eslint:recommended` — undefined names, unused and unreachable code, syntax errors) and a full
-`docker build`; run lint locally before opening a PR:
+`eslint:recommended` — undefined names, unused and unreachable code, syntax errors) and, on pull
+requests, a full `docker build`; run lint locally before opening a PR:
 
 ```bash
 npm run lint
@@ -71,10 +71,14 @@ linted.
 
 ## CI/CD
 
-`.github/workflows/deploy.yml` (workflow `ci`): `check` → `deploy` → `verify`. Every PR and push runs
-`check`. A push to `dev` or `main` builds the image, pushes it to GHCR and deploys over SSH to that branch's
-server, waits for `/healthz` and `APP_VERSION == sha`, and rolls back to the previous image otherwise;
-`verify` checks the public URL. Details and server setup: `docs/deployment.md`.
+`.github/workflows/deploy.yml` (workflow `ci`): `check` → `image` → `deploy` → `verify`, **build once,
+promote the same image**. A push to `dev` builds `:<sha>` once and deploys it by digest; once the public
+`/healthz` reports that `version` and `env: development`, it is tagged `:<sha>-verified`. A push to `main`
+never builds: it finds the `dev` commit with main's exact git tree whose image is verified and deploys that
+digest (then `/healthz` must report `env: production`, and it is tagged `:latest`). Every deploy waits for
+`/healthz` and `APP_VERSION` on the VM and rolls back to the previous image otherwise. Never bake
+environment-specific values into the image — they belong in `/data/.env`. Details and server setup:
+`docs/deployment.md`.
 
 The servers only swap images. `.env`, `cron.json`, `patrik.db` and `public/` live in the mounted `/data`
 directory on each server and are edited by hand there.
