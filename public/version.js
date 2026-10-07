@@ -34,9 +34,9 @@
             // Outside production, say so loudly so dev and prod pages can't be confused.
             if (env && env !== "production") {
                 badge.textContent = "DEV · " + shown;
-                badge.style.color = "#1b1b1f";
-                badge.style.background = "#f5a524";
-                badge.style.borderColor = "#f5a524";
+                badge.style.color = "#ffffff";
+                badge.style.background = "#2f7de1";
+                badge.style.borderColor = "#2f7de1";
             } else {
                 badge.textContent = shown;
             }
