@@ -99,8 +99,16 @@
             color: #00ffcc;
         }
 
-        /* Green checkmark (text glyph, so no platform emoji colour) */
-        .check { color: #2ecc71; font-weight: 700; }
+        /* Check / cross marks: identical SVG boxes, so they line up exactly whatever the font */
+        .check, .cross {
+            display: inline-block;
+            width: 1em;
+            height: 1em;
+            vertical-align: -0.15em;
+            background: no-repeat center / contain;
+        }
+        .check { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8.5l3.2 3.2L13 4.8' fill='none' stroke='%232ecc71' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+        .cross { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 4l8 8M12 4l-8 8' fill='none' stroke='%23ff4d4d' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E"); }
     </style>
 </head>
 
@@ -156,42 +164,42 @@
             </tr>
         </thead>
         <tbody>
-            <tr><td>count_code</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>mk_id</td><td>❌</td></tr>
-            <tr><td>code</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>barcode</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>name</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>unit</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>service</td><td>❌</td></tr>
-            <tr><td>sales</td><td>❌</td></tr>
-            <tr><td>activated</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>purchasing</td><td>❌</td></tr>
-            <tr><td>eshop_sync</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>amount</td><td>❌</td></tr>
-            <tr><td>localization</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>asset</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>compound</td><td>❌ ⚠ Not synced</td></tr>
-            <tr><td>expiration_dates</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>lot_numbers</td><td>❌</td></tr>
-            <tr><td>norm</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>serial_numbers</td><td>❌</td></tr>
-            <tr><td>work</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>category_tree_list</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>free_amount</td><td>❌</td></tr>
-            <tr><td>pricelist</td><td>❌</td></tr>
-            <tr><td>name_desc</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>amount_detail</td><td>❌</td></tr>
-            <tr><td>height</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>width</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>depth</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>weight</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>koli_package_amount</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>gross_weight</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>reservation_detail</td><td>❌</td></tr>
-            <tr><td>customs_fee</td><td>❌ ⚠ Not synced</td></tr>
-            <tr><td>country</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>compound_type</td><td>❌</td></tr>
-            <tr><td>compounds</td><td>❌ ⚠ Not synced</td></tr>
+            <tr><td>count_code</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>mk_id</td><td><span class="cross" role="img" aria-label="No"></span></td></tr>
+            <tr><td>code</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>barcode</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>name</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>unit</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>service</td><td><span class="cross" role="img" aria-label="No"></span></td></tr>
+            <tr><td>sales</td><td><span class="cross" role="img" aria-label="No"></span></td></tr>
+            <tr><td>activated</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>purchasing</td><td><span class="cross" role="img" aria-label="No"></span></td></tr>
+            <tr><td>eshop_sync</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>amount</td><td><span class="cross" role="img" aria-label="No"></span></td></tr>
+            <tr><td>localization</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>asset</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>compound</td><td><span class="cross" role="img" aria-label="No"></span> ⚠ Not synced</td></tr>
+            <tr><td>expiration_dates</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>lot_numbers</td><td><span class="cross" role="img" aria-label="No"></span></td></tr>
+            <tr><td>norm</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>serial_numbers</td><td><span class="cross" role="img" aria-label="No"></span></td></tr>
+            <tr><td>work</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>category_tree_list</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>free_amount</td><td><span class="cross" role="img" aria-label="No"></span></td></tr>
+            <tr><td>pricelist</td><td><span class="cross" role="img" aria-label="No"></span></td></tr>
+            <tr><td>name_desc</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>amount_detail</td><td><span class="cross" role="img" aria-label="No"></span></td></tr>
+            <tr><td>height</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>width</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>depth</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>weight</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>koli_package_amount</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>gross_weight</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>reservation_detail</td><td><span class="cross" role="img" aria-label="No"></span></td></tr>
+            <tr><td>customs_fee</td><td><span class="cross" role="img" aria-label="No"></span> ⚠ Not synced</td></tr>
+            <tr><td>country</td><td><span class="check" role="img" aria-label="Yes"></span></td></tr>
+            <tr><td>compound_type</td><td><span class="cross" role="img" aria-label="No"></span></td></tr>
+            <tr><td>compounds</td><td><span class="cross" role="img" aria-label="No"></span> ⚠ Not synced</td></tr>
         </tbody>
     </table>
 
