@@ -1,4 +1,6 @@
 {
   "warehouseSync": "0 2-23/3 * * 4",
-  "productSync": "0-59/15 * * * 1,2,3,4,5,6,0"
+  "productSync": "0-59/15 * * * 1,2,3,4,5,6,0",
+  "customerSync": "0 */6 * * *",
+  "pricelistSync": "0 4 * * *"
 }

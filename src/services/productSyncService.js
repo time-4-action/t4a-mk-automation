@@ -129,23 +129,40 @@ function deepEqualIgnoreCaseUnordered(a, b) {
 function generateSmartMerge(systemA, systemB, nameA, nameB, outputDir = './delta') {
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
+    // Index the mirror (B / CREAGLOBE) by product code so we can tell an existing product
+    // (→ update) from a missing one (→ create).
     const mapB = Object.fromEntries(systemB.map(p => [p.code, p]));
 
-    const changesB = []; // B needs to update to match A
-    // A is the master and is never written to, so these stay empty by design.
+    const changesB = []; // existing B products to update so they match A
+    const newInB = [];   // A products missing from B → create in B
+
+    // ── STRICT ONE-WAY: T4A (A) → CREAGLOBE (B) ──────────────────────────────────────
+    // A is the single source of truth and is NEVER written to. Nothing ever flows B → A,
+    // so these two stay empty by design — kept only so the return shape (and the run-detail
+    // buckets built on `changes<Name>` / `newIn<Name>`) stays identical.
     const changesA = [];
-    let newInA = [];
-    let newInB = [];
+    const newInA = [];
+
+    // A single code must be created at most once per run. Metakocka rejects a duplicate
+    // create with "Artikel s šifro X že obstaja …", so guard against A listing the same
+    // code twice (and against pushing the same new product from two code paths).
+    const queuedForCreate = new Set();
 
     for (const aProduct of systemA) {
         const bProduct = mapB[aProduct.code];
 
         if (!bProduct) {
-            // Product exists only in System A, so it's new for System B
-            newInB.push({ ...aProduct });
+            // Exists only in A → create it in B. Skip blank codes and any code already
+            // queued this run. Drop `count_code` — it's A's internal id; B assigns its own.
+            if (aProduct.code && !queuedForCreate.has(aProduct.code)) {
+                queuedForCreate.add(aProduct.code);
+                const { count_code, ...rest } = aProduct;
+                newInB.push({ ...rest });
+            }
             continue;
         }
 
+        // Exists in both → adopt A's value for every field that differs.
         const bUpdate = {};
 
         for (const key of new Set([...Object.keys(aProduct), ...Object.keys(bProduct)])) { // Iterate over all unique keys from both products
@@ -173,14 +190,6 @@ function generateSmartMerge(systemA, systemB, nameA, nameB, outputDir = './delta
                 purchasing: bProduct.purchasing,
                 code: bProduct.code
             });
-        }
-    }
-
-    // Products only in A → add to B (B-only products are intentionally left alone).
-    for (const aProduct of systemA) {
-        if (!mapB[aProduct.code]) {
-            const { count_code, ...rest } = aProduct;
-            newInB.push({ ...rest });
         }
     }
 
@@ -255,7 +264,16 @@ async function addProducts(products, secret_key, company_id, systemIdentifier) {
     const url = `${config.metakocka.baseUrl}${config.metakocka.productAddPath}`;
     const error_codes = [];
 
+    // Final safety net against creating the same code twice in one run — Metakocka would
+    // reject the second create with "Artikel s šifro X že obstaja …". generateSmartMerge
+    // already dedupes, but guard here too so any future caller can't reintroduce the bug.
+    const created = new Set();
+
     for (const product of products) {
+        if (product.code) {
+            if (created.has(product.code)) continue; // skip duplicate create in this batch
+            created.add(product.code);
+        }
         try {
             const res = await axios.post(
                 url,
