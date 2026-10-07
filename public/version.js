@@ -28,9 +28,18 @@
 
     fetch("/healthz", { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-        .then(({ version }) => {
+        .then(({ version, env }) => {
             const isSha = /^[0-9a-f]{40}$/.test(version || "");
-            badge.textContent = isSha ? version.slice(0, 7) : version || "unknown";
+            const shown = isSha ? version.slice(0, 7) : version || "unknown";
+            // Outside production, say so loudly so dev and prod pages can't be confused.
+            if (env && env !== "production") {
+                badge.textContent = "DEV · " + shown;
+                badge.style.color = "#1b1b1f";
+                badge.style.background = "#f5a524";
+                badge.style.borderColor = "#f5a524";
+            } else {
+                badge.textContent = shown;
+            }
             badge.title = isSha ? "Commit " + version : "Not a CI build";
             if (isSha) badge.href = REPO + "/commit/" + version;
         })

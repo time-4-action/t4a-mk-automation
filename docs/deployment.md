@@ -2,14 +2,38 @@
 
 `.github/workflows/deploy.yml` (workflow `ci`) runs `check` → `deploy` → `verify`.
 
-**check** runs on every pull request and every push to `main`: `npm ci`, a
+There are two environments, one per long-lived branch:
+
+```
+feature/fix branch ── PR ──► dev ── push ──► build :dev-<sha> ──► DEV VM  ──► mkauto.dev.time-4-action.com
+                               │
+                               └── PR dev → main (once tested on dev)
+                                                     main ── push ──► build :<sha> ──► PROD VM ──► mkauto.time-4-action.com
+```
+
+Feature pull requests target `dev`. When a batch has been tried on dev, a pull
+request from `dev` into `main` releases it. Hotfixes may go straight to `main`;
+merge `main` back into `dev` afterwards.
+
+| | `dev` | `main` |
+|---|---|---|
+| GitHub environment | `development` | `production` |
+| Image tags | `:dev-<sha>`, `:dev` | `:<sha>`, `:latest` |
+| SSH secrets | `DEV_DEPLOY_*` | `PROD_DEPLOY_*` |
+| Server compose | `deploy/docker-compose.dev.yml` | `deploy/docker-compose.yml` |
+| Public check | `https://mkauto.dev.time-4-action.com/healthz` (`DEV_URL` variable) | `https://mkauto.time-4-action.com/healthz` (`PRODUCTION_URL` variable) |
+| `APP_ENV` in `/data/.env` | **not set** | `production` |
+
+**check** runs on every pull request and every push to `dev` or `main`: `npm ci`, a
 `node --check` syntax pass over every tracked `.js` file, and a full
 `docker build` (not pushed), so a broken Dockerfile or a native module
 (`better-sqlite3`) that no longer installs fails the pull request. A newer push
 to a pull request cancels its running check; runs on `main` are queued, so
 pushes deploy strictly in order.
 
-**deploy** runs only on `main` after a green check, one at a time. It builds the
+**deploy** runs only on `dev` and `main` after a green check, one at a time per
+environment. The steps below describe `main`; `dev` is the same with the values
+from the table above. It builds the
 image on GitHub Actions with the commit SHA baked in as `APP_VERSION`, pushes
 `ghcr.io/time-4-action/t4a-mk-automation:<sha>` and `:latest` to GitHub
 Container Registry, then SSHes to the VM as `deploy` and, in
@@ -74,6 +98,46 @@ Docker Hub image. The compose file must use `${APP_IMAGE...}`: a copy with a fix
 rolls back.
 
 Once it is running from GHCR, the Docker Hub repository can be deleted.
+
+## Safety lock
+
+`src/config/envGuard.js` makes sure nothing outside production touches
+production. Unless `/data/.env` has `APP_ENV=production`, the app:
+
+- **refuses to start** if Metakocka points at `main.metakocka.si` or
+  `BETTER_STACK_WH_SYNC_HEARTBEAT` is set, and logs which setting is wrong;
+- **blocks every outbound call** to `main.metakocka.si` or Better Stack, as a
+  backup.
+
+Dev and laptops point at the Metakocka test system with
+`MK_BASE_URL=https://devmainsi.metakocka.si/rest/eshop`
+(`config/config.json`'s `baseUrl` is the production default). `/healthz` reports
+`env`, and outside production the version badge on every page turns amber and
+reads `DEV · <sha>`.
+
+**Only the production `.env` may contain `APP_ENV=production`.** If it is
+missing there, production refuses to start and the deploy rolls back.
+
+## Dev environment (server setup, once)
+
+The dev VM is a separate machine. Docker, the `deploy` user and its CI SSH key
+are set up as on production, with their own key and the `DEV_DEPLOY_HOST`,
+`DEV_DEPLOY_SSH_KEY`, `DEV_DEPLOY_FINGERPRINT` organization secrets.
+
+DNS and TLS need no per-app work: Cloudflare has one `*.dev.time-4-action.com`
+A record (DNS only, grey cloud) pointing at the dev VM, and Traefik
+(`/data/stack/infra/traefik`) holds a Let's Encrypt wildcard certificate
+renewed over the Cloudflare DNS API. An app gets its dev domain from the
+`traefik.*` labels in its dev compose file and must join the external `web`
+network.
+
+For this app, in `/data/stack/apps/time-4-action/mk-automation` on the dev VM,
+owned by `deploy`:
+
+- `docker-compose.yml` = `deploy/docker-compose.dev.yml`;
+- `.env` from `deploy/dev.env.example`: devmainsi credentials for **both** T4A
+  and CREAGLOBE, no `APP_ENV`, no heartbeat. Never copy the production `.env`;
+- `cron.json` (a copy of the repo's is fine — the schedules sync devmainsi).
 
 ## Dependency updates
 
