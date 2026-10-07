@@ -299,7 +299,7 @@ app.put("/api/v1/schedules/warehouse-sync", authenticate, async (req, res) => {
         }
 
         // Validate the cron expression format
-        if (!isValidCron(warehouseSync, { seconds: false })) {
+        if (!isValidCron(warehouseSync, { seconds: false }) || !cron.validate(warehouseSync)) {
             return res.status(400).json({ error: "Invalid cron expression" });
         }
 
@@ -390,7 +390,7 @@ app.put("/api/v1/schedules/product-sync", authenticate, async (req, res) => {
         const { productSync } = req.body;
 
         if (!productSync) return res.status(400).json({ error: "productSync (cron expression) is required" });
-        if (!isValidCron(productSync, { seconds: false })) return res.status(400).json({ error: "Invalid cron expression" });
+        if (!isValidCron(productSync, { seconds: false }) || !cron.validate(productSync)) return res.status(400).json({ error: "Invalid cron expression" });
 
         const cronFilePath = process.env.CRON_FILE_PATH || path.join(__dirname, "cron.json");
         let currentConfig = {};
@@ -471,7 +471,7 @@ app.put("/api/v1/schedules/customer-sync", authenticate, async (req, res) => {
         const { customerSync } = req.body;
 
         if (!customerSync) return res.status(400).json({ error: "customerSync (cron expression) is required" });
-        if (!isValidCron(customerSync, { seconds: false })) return res.status(400).json({ error: "Invalid cron expression" });
+        if (!isValidCron(customerSync, { seconds: false }) || !cron.validate(customerSync)) return res.status(400).json({ error: "Invalid cron expression" });
 
         const cronFilePath = process.env.CRON_FILE_PATH || path.join(__dirname, "cron.json");
         let currentConfig = {};
@@ -702,7 +702,7 @@ app.put("/api/v1/schedules/pricelist-sync", authenticate, async (req, res) => {
         const { pricelistSync } = req.body;
 
         if (!pricelistSync) return res.status(400).json({ error: "pricelistSync (cron expression) is required" });
-        if (!isValidCron(pricelistSync, { seconds: false })) return res.status(400).json({ error: "Invalid cron expression" });
+        if (!isValidCron(pricelistSync, { seconds: false }) || !cron.validate(pricelistSync)) return res.status(400).json({ error: "Invalid cron expression" });
 
         const cronFilePath = process.env.CRON_FILE_PATH || path.join(__dirname, "cron.json");
         let currentConfig = {};
@@ -1408,6 +1408,19 @@ async function warehousesSync() {
     }
 }
 
+// Schedules a sync job, or returns null if node-cron rejects the expression. cron.json lives on
+// the server and is edited outside this repo; node-cron ≥4.6 throws on expressions it used to
+// accept (e.g. "0 0 31 2 *", a common "never run" trick), and a throw here at boot would crash
+// the whole server instead of just leaving that one job unscheduled.
+function scheduleCron(name, cronExpression, fn) {
+    try {
+        return cron.schedule(cronExpression, fn);
+    } catch (err) {
+        console.error(`${logTs()} ⛔ ${name} sync NOT scheduled — invalid cron "${cronExpression}": ${err.message}`);
+        return null;
+    }
+}
+
 function startOrUpdateWarehousesCron(cronExpression) {
     // Stop existing job if running
     if (WAREHOUSE_SYNC_CRON_JOB) {
@@ -1416,11 +1429,11 @@ function startOrUpdateWarehousesCron(cronExpression) {
     }
 
     // Start new cron job (records the run + outcome via the wrapper).
-    WAREHOUSE_SYNC_CRON_JOB = cron.schedule(cronExpression, () => {
+    WAREHOUSE_SYNC_CRON_JOB = scheduleCron("warehouse", cronExpression, () => {
         runWarehouseSync("schedule");
     });
 
-    console.log("Warehouse sync cron job scheduled:", cronExpression);
+    if (WAREHOUSE_SYNC_CRON_JOB) console.log("Warehouse sync cron job scheduled:", cronExpression);
 }
 
 function startOrUpdateProductsCron(cronExpression) {
@@ -1431,11 +1444,11 @@ function startOrUpdateProductsCron(cronExpression) {
     }
 
     // Start new cron job (records the run + outcome via the wrapper).
-    PRODUCT_SYNC_CRON_JOB = cron.schedule(cronExpression, () => {
+    PRODUCT_SYNC_CRON_JOB = scheduleCron("product", cronExpression, () => {
         runProductSync("schedule");
     });
 
-    console.log("Product sync cron job scheduled:", cronExpression);
+    if (PRODUCT_SYNC_CRON_JOB) console.log("Product sync cron job scheduled:", cronExpression);
 }
 
 function startOrUpdateCustomersCron(cronExpression) {
@@ -1446,11 +1459,11 @@ function startOrUpdateCustomersCron(cronExpression) {
     }
 
     // Scheduled runs always write (dryRun defaults to false).
-    CUSTOMER_SYNC_CRON_JOB = cron.schedule(cronExpression, () => {
+    CUSTOMER_SYNC_CRON_JOB = scheduleCron("customer", cronExpression, () => {
         runCustomerSync("schedule");
     });
 
-    console.log("Customer sync cron job scheduled:", cronExpression);
+    if (CUSTOMER_SYNC_CRON_JOB) console.log("Customer sync cron job scheduled:", cronExpression);
 }
 
 function startOrUpdatePricelistsCron(cronExpression) {
@@ -1462,11 +1475,11 @@ function startOrUpdatePricelistsCron(cronExpression) {
 
     // Scheduled runs always write (dryRun defaults to false). With no mappings saved the
     // run is a recorded no-op, so leaving the schedule armed on a fresh install is safe.
-    PRICELIST_SYNC_CRON_JOB = cron.schedule(cronExpression, () => {
+    PRICELIST_SYNC_CRON_JOB = scheduleCron("pricelist", cronExpression, () => {
         runPricelistSync("schedule");
     });
 
-    console.log("Pricelist sync cron job scheduled:", cronExpression);
+    if (PRICELIST_SYNC_CRON_JOB) console.log("Pricelist sync cron job scheduled:", cronExpression);
 }
 
 
