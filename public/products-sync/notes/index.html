@@ -99,8 +99,17 @@
             color: #00ffcc;
         }
 
-        /* Green checkmark (text glyph, so no platform emoji colour) */
-        .check { color: #2ecc71; font-weight: 700; }
+        /* Check / cross marks: text glyphs (no platform emoji colour), same box so they line up */
+        .check, .cross {
+            display: inline-block;
+            width: 1.2em;
+            text-align: center;
+            line-height: 1;
+            vertical-align: middle;
+            font-weight: 700;
+        }
+        .check { color: #2ecc71; }
+        .cross { color: #ff4d4d; }
     </style>
 </head>
 
@@ -157,41 +166,41 @@
         </thead>
         <tbody>
             <tr><td>count_code</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>mk_id</td><td>❌</td></tr>
+            <tr><td>mk_id</td><td><span class="cross">&#x2718;&#xFE0E;</span></td></tr>
             <tr><td>code</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
             <tr><td>barcode</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
             <tr><td>name</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
             <tr><td>unit</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>service</td><td>❌</td></tr>
-            <tr><td>sales</td><td>❌</td></tr>
+            <tr><td>service</td><td><span class="cross">&#x2718;&#xFE0E;</span></td></tr>
+            <tr><td>sales</td><td><span class="cross">&#x2718;&#xFE0E;</span></td></tr>
             <tr><td>activated</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>purchasing</td><td>❌</td></tr>
+            <tr><td>purchasing</td><td><span class="cross">&#x2718;&#xFE0E;</span></td></tr>
             <tr><td>eshop_sync</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>amount</td><td>❌</td></tr>
+            <tr><td>amount</td><td><span class="cross">&#x2718;&#xFE0E;</span></td></tr>
             <tr><td>localization</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
             <tr><td>asset</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>compound</td><td>❌ ⚠ Not synced</td></tr>
+            <tr><td>compound</td><td><span class="cross">&#x2718;&#xFE0E;</span> ⚠ Not synced</td></tr>
             <tr><td>expiration_dates</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>lot_numbers</td><td>❌</td></tr>
+            <tr><td>lot_numbers</td><td><span class="cross">&#x2718;&#xFE0E;</span></td></tr>
             <tr><td>norm</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>serial_numbers</td><td>❌</td></tr>
+            <tr><td>serial_numbers</td><td><span class="cross">&#x2718;&#xFE0E;</span></td></tr>
             <tr><td>work</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
             <tr><td>category_tree_list</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>free_amount</td><td>❌</td></tr>
-            <tr><td>pricelist</td><td>❌</td></tr>
+            <tr><td>free_amount</td><td><span class="cross">&#x2718;&#xFE0E;</span></td></tr>
+            <tr><td>pricelist</td><td><span class="cross">&#x2718;&#xFE0E;</span></td></tr>
             <tr><td>name_desc</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>amount_detail</td><td>❌</td></tr>
+            <tr><td>amount_detail</td><td><span class="cross">&#x2718;&#xFE0E;</span></td></tr>
             <tr><td>height</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
             <tr><td>width</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
             <tr><td>depth</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
             <tr><td>weight</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
             <tr><td>koli_package_amount</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
             <tr><td>gross_weight</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>reservation_detail</td><td>❌</td></tr>
-            <tr><td>customs_fee</td><td>❌ ⚠ Not synced</td></tr>
+            <tr><td>reservation_detail</td><td><span class="cross">&#x2718;&#xFE0E;</span></td></tr>
+            <tr><td>customs_fee</td><td><span class="cross">&#x2718;&#xFE0E;</span> ⚠ Not synced</td></tr>
             <tr><td>country</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
-            <tr><td>compound_type</td><td>❌</td></tr>
-            <tr><td>compounds</td><td>❌ ⚠ Not synced</td></tr>
+            <tr><td>compound_type</td><td><span class="cross">&#x2718;&#xFE0E;</span></td></tr>
+            <tr><td>compounds</td><td><span class="cross">&#x2718;&#xFE0E;</span> ⚠ Not synced</td></tr>
         </tbody>
     </table>
 

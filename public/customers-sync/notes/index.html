@@ -87,8 +87,17 @@
         }
         code { color:#00ffcc; }
 
-        /* Green checkmark (text glyph, so no platform emoji colour) */
-        .check { color: #2ecc71; font-weight: 700; }
+        /* Check / cross marks: text glyphs (no platform emoji colour), same box so they line up */
+        .check, .cross {
+            display: inline-block;
+            width: 1.2em;
+            text-align: center;
+            line-height: 1;
+            vertical-align: middle;
+            font-weight: 700;
+        }
+        .check { color: #2ecc71; }
+        .cross { color: #ff4d4d; }
     </style>
 </head>
 
@@ -168,8 +177,8 @@
             <tr><td>billing address (Račun)</td><td><span class="check">&#x2714;&#xFE0E;</span> (updated in place)</td></tr>
             <tr><td>delivery addresses</td><td><span class="check">&#x2714;&#xFE0E;</span> (matched by content)</td></tr>
             <tr><td>contacts</td><td><span class="check">&#x2714;&#xFE0E;</span> (matched by content)</td></tr>
-            <tr><td>count_code</td><td>❌ (per-company internal)</td></tr>
-            <tr><td>mk_id</td><td>❌ (per-company internal)</td></tr>
+            <tr><td>count_code</td><td><span class="cross">&#x2718;&#xFE0E;</span> (per-company internal)</td></tr>
+            <tr><td>mk_id</td><td><span class="cross">&#x2718;&#xFE0E;</span> (per-company internal)</td></tr>
         </tbody>
     </table>
 
