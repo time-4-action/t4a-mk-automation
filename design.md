@@ -358,7 +358,7 @@ background, Orbitron display font, plain buttons.
 
 | Page | Path | What it does |
 |---|---|---|
-| Hub | `/` | "Time 4 Action - Automation" — three cards linking to the sync pages, plus links to the per-sync notes pages |
+| Hub | `/` | "Time 4 Action - Metakocka Automation" — three cards linking to the sync pages, plus links to the per-sync notes pages |
 | Warehouse Sync | `/warehouse-sync` | Interval + days grid → generated cron, API-key box, **Update Schedule / Clear All / Run Now**, and a job-scheduler log table |
 | Products Sync | `/products-sync` | Same |
 | Customers Sync | `/customers-sync` | Same, plus a **Preview (Dry Run)** button |

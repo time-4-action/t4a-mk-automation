@@ -112,7 +112,7 @@ production. Unless `/data/.env` has `APP_ENV=production`, the app:
 Dev and laptops point at the Metakocka test system with
 `MK_BASE_URL=https://devmainsi.metakocka.si/rest/eshop`
 (`config/config.json`'s `baseUrl` is the production default). `/healthz` reports
-`env`, and outside production the version badge on every page turns amber and
+`env`, and outside production the version badge on every page turns blue and
 reads `DEV · <sha>`.
 
 **Only the production `.env` may contain `APP_ENV=production`.** If it is
