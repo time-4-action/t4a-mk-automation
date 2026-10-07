@@ -86,6 +86,9 @@
             color: #00ffcc;
         }
         code { color:#00ffcc; }
+
+        /* Green checkmark (text glyph, so no platform emoji colour) */
+        .check { color: #2ecc71; font-weight: 700; }
     </style>
 </head>
 
@@ -154,17 +157,17 @@
             <tr><th>Field</th><th>Included in Sync</th></tr>
         </thead>
         <tbody>
-            <tr><td>customer (name)</td><td>✔️</td></tr>
-            <tr><td>tax_id_number</td><td>✔️ (also a match key)</td></tr>
-            <tr><td>registration_number</td><td>✔️</td></tr>
-            <tr><td>business_entity</td><td>✔️</td></tr>
-            <tr><td>taxpayer</td><td>✔️</td></tr>
-            <tr><td>foreign_county</td><td>✔️</td></tr>
-            <tr><td>buyer</td><td>✔️</td></tr>
-            <tr><td>supplier</td><td>✔️</td></tr>
-            <tr><td>billing address (Račun)</td><td>✔️ (updated in place)</td></tr>
-            <tr><td>delivery addresses</td><td>✔️ (matched by content)</td></tr>
-            <tr><td>contacts</td><td>✔️ (matched by content)</td></tr>
+            <tr><td>customer (name)</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
+            <tr><td>tax_id_number</td><td><span class="check">&#x2714;&#xFE0E;</span> (also a match key)</td></tr>
+            <tr><td>registration_number</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
+            <tr><td>business_entity</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
+            <tr><td>taxpayer</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
+            <tr><td>foreign_county</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
+            <tr><td>buyer</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
+            <tr><td>supplier</td><td><span class="check">&#x2714;&#xFE0E;</span></td></tr>
+            <tr><td>billing address (Račun)</td><td><span class="check">&#x2714;&#xFE0E;</span> (updated in place)</td></tr>
+            <tr><td>delivery addresses</td><td><span class="check">&#x2714;&#xFE0E;</span> (matched by content)</td></tr>
+            <tr><td>contacts</td><td><span class="check">&#x2714;&#xFE0E;</span> (matched by content)</td></tr>
             <tr><td>count_code</td><td>❌ (per-company internal)</td></tr>
             <tr><td>mk_id</td><td>❌ (per-company internal)</td></tr>
         </tbody>
