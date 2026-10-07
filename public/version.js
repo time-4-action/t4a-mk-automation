@@ -30,7 +30,7 @@
         .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
         .then(({ version }) => {
             const isSha = /^[0-9a-f]{40}$/.test(version || "");
-            badge.textContent = (isSha ? version.slice(0, 7) : version || "unknown");
+            badge.textContent = isSha ? version.slice(0, 7) : version || "unknown";
             badge.title = isSha ? "Commit " + version : "Not a CI build";
             if (isSha) badge.href = REPO + "/commit/" + version;
         })
