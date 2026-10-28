@@ -8,6 +8,38 @@ const COMPANY_ID_TO_NAME = {
 };
 
 /**
+ * T4A top-level category → the CREAGLOBE top-level category it is filed under (null: none).
+ * T4A split "SPARE PARTS & PROMO" into "SPARE PARTS" and "PROMO ITEMS"; CREAGLOBE kept the old
+ * tree, and Metakocka's API can only reference existing categories, never create one. Without
+ * this every product in those two categories failed with "Categorie deffinition is not in the
+ * correct tree structure." Subcategories carry over unchanged. If CREAGLOBE gets the new
+ * categories, drop the entries.
+ */
+const CREAGLOBE_CATEGORY_MAP = {
+    'spare parts': 'SPARE PARTS & PROMO',
+    'promo items': null
+};
+
+/**
+ * Rewrites a T4A product's category paths into CREAGLOBE's tree (CREAGLOBE_CATEGORY_MAP).
+ * A product left with no category loses the key, so it is neither compared nor sent.
+ * @param {Object} product - A product from formatProductList.
+ * @returns {Object} The product with mapped categories.
+ */
+function mapCategoriesForCreaglobe(product) {
+    if (!product.categories) return product;
+    const categories = product.categories.flatMap(({ category }) => {
+        const top = category[0].toLowerCase();
+        if (!(top in CREAGLOBE_CATEGORY_MAP)) return [{ category }];
+        const target = CREAGLOBE_CATEGORY_MAP[top];
+        return target ? [{ category: [target, ...category.slice(1)] }] : [];
+    });
+    const mapped = { ...product, categories };
+    if (!categories.length) delete mapped.categories;
+    return mapped;
+}
+
+/**
  * Parses a value to a number, handling comma as a decimal separator if the value is a string.
  * @param {string|number} value - The value to parse.
  * @returns {number} The parsed number.
@@ -337,8 +369,6 @@ async function listProducts(secret_key, company_id) {
                 }
             }
         );
-        // console.log({...baseRequestData})
-        console.log(productListResponse.data)
         productList.push(...productListResponse.data.product_list)
         
         offset += 1000;
@@ -368,7 +398,7 @@ async function productsSync(systemAKey, systemACompany, systemBKey, systemBCompa
         ]);
         // console.log(`Found ${productsA.length} products in System A and ${productsB.length} in System B.`);
 
-        const productsAFormated = formatProductList(productsA);
+        const productsAFormated = formatProductList(productsA).map(mapCategoriesForCreaglobe);
         const productsBFormated = formatProductList(productsB);
 
         const nameA = COMPANY_ID_TO_NAME[systemACompany] || 'SystemA';

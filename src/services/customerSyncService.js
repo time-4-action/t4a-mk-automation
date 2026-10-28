@@ -33,15 +33,17 @@ function normStr(v) {
     return (v == null ? "" : String(v)).trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-/** Real Metakocka data has a "provice" typo alongside "province" — accept either. */
+/** Real Metakocka data has a "provice" typo alongside "province" — accept either. add_partner
+ *  takes "province", but update_partner only stores "provice" (it ignores "province"). */
 function addrProvince(a) {
     return a.province != null ? a.province : a.provice;
 }
 
-/** Content signature for a delivery address (used to dedupe across companies). */
+/** Content signature for a delivery address (used to dedupe across companies). Not the
+ *  address type: CREAGLOBE often files the same address as "Poslovna enota" where T4A has
+ *  "Račun", and counting the type would append it again as a duplicate. */
 function addressSignature(a) {
     return [
-        normStr(a.address_type || "Račun"),
         normStr(a.street),
         normStr(a.post_number),
         normStr(a.city)
@@ -101,16 +103,21 @@ function formatPartner(p) {
 }
 
 // Top-level partner fields that are pushed T4A → CREAGLOBE on an existing match.
+// Not foreign_county: update_partner answers OK but ignores it, so it was re-sent every hour
+// for good. It is only set on create (buildCreatePayload).
 const TOP_LEVEL_FIELDS = [
     "customer",
     "tax_id_number",
     "registration_number",
     "business_entity",
     "taxpayer",
-    "foreign_county",
     "buyer",
     "supplier"
 ];
+
+// Roles CREAGLOBE may hold on its own (a T4A customer can be a CREAGLOBE supplier with purchase
+// invoices, and Metakocka then refuses to drop the role). The sync only ever switches them on.
+const ADD_ONLY_FIELDS = new Set(["buyer", "supplier"]);
 
 /** Case-insensitive equality that treats null/undefined/"" as equal (missing == blank). */
 function fieldEqual(a, b) {
@@ -121,27 +128,45 @@ function fieldEqual(a, b) {
 // ── match index ──────────────────────────────────────────────────────────────
 
 /**
- * Indexes the CREAGLOBE partner list for lookup by tax number (primary) and normalised
- * name (fallback). First writer wins on collisions so the mapping is deterministic.
+ * Indexes the CREAGLOBE partner list by tax number (primary) and normalised name (fallback).
+ * Each key keeps every partner that has it: CREAGLOBE has duplicates, some of them empty, and
+ * two different companies can share a tax number. findMatch picks among them.
  */
 function buildMatchIndex(creaglobePartners) {
     const byTax = new Map();
     const byName = new Map();
+    const add = (map, key, p) => {
+        if (!key) return;
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(p);
+    };
     for (const p of creaglobePartners) {
-        const tax = normTax(p.tax_id_number);
-        if (tax && !byTax.has(tax)) byTax.set(tax, p);
-        const name = normStr(p.customer);
-        if (name && !byName.has(name)) byName.set(name, p);
+        add(byTax, normTax(p.tax_id_number), p);
+        add(byName, normStr(p.customer), p);
     }
     return { byTax, byName };
 }
 
-/** Finds the CREAGLOBE counterpart of a T4A partner, or null. */
+/** Of several candidates, the one with the most addresses (the first on a tie). An empty
+ *  duplicate has none, and contacts can't be added to a partner without an address. */
+function richest(candidates) {
+    return candidates.reduce((best, p) => (p.addresses.length > best.addresses.length ? p : best));
+}
+
+/**
+ * Finds the CREAGLOBE counterpart of a T4A partner, or null. `rank` says how sure the match
+ * is (tax and name 3, tax 2, name 1), so when two T4A partners land on the same CREAGLOBE
+ * partner the sync can let only the best one update it.
+ */
 function findMatch(t4aPartner, index) {
     const tax = normTax(t4aPartner.tax_id_number);
-    if (tax && index.byTax.has(tax)) return { partner: index.byTax.get(tax), via: "tax" };
     const name = normStr(t4aPartner.customer);
-    if (name && index.byName.has(name)) return { partner: index.byName.get(name), via: "name" };
+    const byTax = (tax && index.byTax.get(tax)) || [];
+    const sameName = byTax.filter((p) => normStr(p.customer) === name);
+    if (sameName.length) return { partner: richest(sameName), via: "tax", rank: 3 };
+    if (byTax.length) return { partner: richest(byTax), via: "tax", rank: 2 };
+    const byName = (name && index.byName.get(name)) || [];
+    if (byName.length) return { partner: richest(byName), via: "name", rank: 1 };
     return null;
 }
 
@@ -219,6 +244,7 @@ function buildUpdatePayload(t4a, cg) {
     for (const field of TOP_LEVEL_FIELDS) {
         const v = t4a[field];
         if (v == null || v === "") continue;
+        if (ADD_ONLY_FIELDS.has(field) && normStr(v) !== "true") continue;
         if (!fieldEqual(v, cg[field])) {
             partner[field] = v;
             changed = true;
@@ -237,7 +263,7 @@ function buildUpdatePayload(t4a, cg) {
                 street: !fieldEqual(t4a.billing.street, cg.billing.street) ? t4a.billing.street : undefined,
                 post_number: !fieldEqual(t4a.billing.post_number, cg.billing.post_number) ? t4a.billing.post_number : undefined,
                 city: !fieldEqual(t4a.billing.city, cg.billing.city) ? t4a.billing.city : undefined,
-                province: !fieldEqual(t4a.billing.province, cg.billing.province) ? t4a.billing.province : undefined,
+                provice: !fieldEqual(t4a.billing.province, cg.billing.province) ? t4a.billing.province : undefined,
                 country: !fieldEqual(t4a.billing.country, cg.billing.country) ? t4a.billing.country : undefined
             });
             if (Object.keys(diff).length) {
@@ -252,7 +278,7 @@ function buildUpdatePayload(t4a, cg) {
                     street: t4a.billing.street,
                     post_number: t4a.billing.post_number,
                     city: t4a.billing.city,
-                    province: t4a.billing.province,
+                    provice: t4a.billing.province,
                     country: t4a.billing.country
                 })
             );
@@ -269,11 +295,12 @@ function buildUpdatePayload(t4a, cg) {
         const match = cgBySig.get(addressSignature(a));
         if (match) {
             const diff = pruneEmpty({
-                province: !fieldEqual(a.province, match.province) ? a.province : undefined,
+                provice: !fieldEqual(a.province, match.province) ? a.province : undefined,
                 country: !fieldEqual(a.country, match.country) ? a.country : undefined
             });
             if (Object.keys(diff).length) {
-                addressList.push({ mk_id: match.mk_id, address_type: a.address_type, ...diff });
+                // CREAGLOBE's own type: the match ignores type, so T4A's may differ.
+                addressList.push({ mk_id: match.mk_id, address_type: match.address_type, ...diff });
                 changed = true;
             }
         } else {
@@ -283,7 +310,7 @@ function buildUpdatePayload(t4a, cg) {
                     street: a.street,
                     post_number: a.post_number,
                     city: a.city,
-                    province: a.province,
+                    provice: a.province,
                     country: a.country
                 })
             );
@@ -296,7 +323,9 @@ function buildUpdatePayload(t4a, cg) {
     const cgContactSigs = new Set(cg.contacts.map(contactSignature));
     const cgBillingAddrId = cg.billing ? cg.billing.mk_id : undefined;
     const contactList = [];
-    for (const c of t4a.contacts) {
+    // update_partner needs mk_address_id for a new contact. With no CREAGLOBE address yet, the
+    // billing address is appended above and the contacts follow on the next run.
+    for (const c of cgBillingAddrId ? t4a.contacts : []) {
         if (cgContactSigs.has(contactSignature(c))) continue; // already present
         const entry = pruneEmpty({
             mk_address_id: cgBillingAddrId, // attach new contacts to CREAGLOBE's billing address
@@ -366,7 +395,7 @@ function buildAppendNestedPayload(t4a, created) {
                 street: a.street,
                 post_number: a.post_number,
                 city: a.city,
-                province: a.province,
+                provice: a.province,
                 country: a.country
             })
         );
@@ -494,13 +523,28 @@ async function customersSync(opts = {}) {
     // Guard against creating the same customer twice in one run (two T4A rows, same tax/name).
     const createdKeys = new Set();
 
-    for (const t4a of t4aPartners) {
+    // T4A has duplicates too (same customer twice, once with a tax number and once without).
+    // Both used to update the same CREAGLOBE partner and overwrite each other every run, so
+    // each CREAGLOBE partner is updated only by its best match (the first one on a tie).
+    const matches = t4aPartners.map((t4a) => findMatch(t4a, index));
+    const owner = new Map(); // CREAGLOBE mk_id → index of the T4A partner that updates it
+    matches.forEach((m, i) => {
+        if (!m) return;
+        const current = owner.get(m.partner.mk_id);
+        if (current === undefined || m.rank > matches[current].rank) owner.set(m.partner.mk_id, i);
+    });
+
+    for (const [i, t4a] of t4aPartners.entries()) {
         const label = t4a.customer || t4a.count_code || t4a.mk_id;
-        const match = findMatch(t4a, index);
+        const match = matches[i];
 
         try {
             if (match) {
                 matched++;
+                if (owner.get(match.partner.mk_id) !== i) {
+                    skipped++;
+                    continue;
+                }
                 const payload = buildUpdatePayload(t4a, match.partner);
                 if (!payload) {
                     skipped++;
