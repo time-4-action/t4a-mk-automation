@@ -289,10 +289,19 @@ function buildUpdatePayload(t4a, cg) {
     // Non-billing delivery addresses are matched by content signature: update the matched one if
     // province/country drifted, otherwise append the ones CREAGLOBE is missing.
     const cgNonBilling = cg.addresses.filter((a) => a !== cg.billing);
-    const cgBySig = new Map(cgNonBilling.map((a) => [addressSignature(a), a]));
+    const cgBySig = new Map();
+    for (const a of cgNonBilling) {
+        const sig = addressSignature(a);
+        if (!cgBySig.has(sig)) cgBySig.set(sig, []);
+        cgBySig.get(sig).push(a);
+    }
     for (const a of t4a.addresses) {
         if (a === t4a.billing) continue; // handled above
-        const match = cgBySig.get(addressSignature(a));
+        // The same street can be there several times with different types and countries:
+        // prefer the one with the same type, or it would be "updated" every run.
+        const candidates = cgBySig.get(addressSignature(a)) || [];
+        const match =
+            candidates.find((c) => normStr(c.address_type) === normStr(a.address_type)) || candidates[0];
         if (match) {
             const diff = pruneEmpty({
                 provice: !fieldEqual(a.province, match.province) ? a.province : undefined,
