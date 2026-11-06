@@ -1,14 +1,12 @@
-# check -> image -> deploy -> verify. Build once, promote the same image.
+# check -> image -> deploy -> verify.
 #
 #   pull request  lint + a Docker build that is not pushed.
-#   push to dev   build the image ONCE, push it as :<sha>, deploy it to the dev VM by digest and
-#                 check it from outside. Only then is it tagged :<sha>-verified (and :dev).
-#   push to main  NO build. Find the dev commit with exactly main's code (same git tree, so the
-#                 dev -> main merge commit maps to the dev tip) whose image passed dev, and deploy
-#                 that same digest to production; tag it :latest once production is verified.
+#   push to main  build the image, push it as :<sha>, deploy it to production by digest and check
+#                 it from outside. Only then is it tagged :latest.
+#   push to dev   (optional, to try something on the dev VM first) the same, to the dev VM; tagged
+#                 :<sha>-verified and :dev once dev is verified.
 #
-# Production therefore runs byte-for-byte the image that was verified on dev. Code that never
-# went through dev (a direct push to main) has no verified image and fails the `image` job.
+# Pull requests go straight into main; merging one deploys production (CLAUDE.md).
 #
 #   dev  -> development env, DEV_DEPLOY_* secrets,  mkauto.dev.time-4-action.com
 #   main -> production env,  PROD_DEPLOY_* secrets, mkauto.time-4-action.com
@@ -60,7 +58,7 @@ jobs:
       - run: npm run lint
 
       # Pull requests only: proves the Dockerfile and native modules (better-sqlite3) still build
-      # before merge. On dev the `image` job builds anyway, and main never builds.
+      # before merge. On pushes the `image` job builds anyway.
       - if: github.event_name == 'pull_request'
         uses: docker/setup-buildx-action@v4
       - if: github.event_name == 'pull_request'
@@ -81,13 +79,10 @@ jobs:
       contents: read
       packages: write
     outputs:
-      ref: ${{ steps.build.outputs.ref || steps.promote.outputs.ref }}
-      version: ${{ steps.build.outputs.version || steps.promote.outputs.version }}
+      ref: ${{ steps.build.outputs.ref }}
+      version: ${{ steps.build.outputs.version }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          # main looks through dev's history for the commit with the same tree.
-          fetch-depth: 0
 
       - uses: docker/setup-buildx-action@v4
 
@@ -97,10 +92,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ---- dev: build once ------------------------------------------------------------------
-
-      - if: github.ref_name == 'dev'
-        id: buildpush
+      - id: buildpush
         uses: docker/build-push-action@v7
         with:
           push: true
@@ -112,39 +104,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - if: github.ref_name == 'dev'
-        id: build
+      - id: build
         env:
           DIGEST: ${{ steps.buildpush.outputs.digest }}
         run: |
           echo "ref=$IMAGE@$DIGEST" >> "$GITHUB_OUTPUT"
           echo "version=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
           echo "built $IMAGE@$DIGEST from $GITHUB_SHA"
-
-      # ---- main: promote, never build -------------------------------------------------------
-
-      - if: github.ref_name == 'main'
-        id: promote
-        run: |
-          TREE=$(git rev-parse "HEAD^{tree}")
-          echo "main $GITHUB_SHA has tree $TREE; looking for a verified dev image with the same code"
-          SOURCE=""
-          for c in $(git log --format='%H %T' -n 500 origin/dev | awk -v t="$TREE" '$2 == t { print $1 }'); do
-            if docker buildx imagetools inspect "$IMAGE:$c-verified" >/dev/null 2>&1; then
-              SOURCE=$c; break
-            fi
-          done
-          if [ -z "$SOURCE" ]; then
-            echo "::error::no dev commit with main's exact code has a verified image ($IMAGE:<sha>-verified). Promote through dev: merge into dev, let it deploy green, then open dev -> main."
-            exit 1
-          fi
-          DIGEST=$(docker buildx imagetools inspect "$IMAGE:$SOURCE-verified" --format '{{json .Manifest}}' | jq -r .digest)
-          if [ -z "$DIGEST" ] || [ "$DIGEST" = null ]; then
-            echo "::error::could not read digest of $IMAGE:$SOURCE-verified"; exit 1
-          fi
-          echo "ref=$IMAGE@$DIGEST" >> "$GITHUB_OUTPUT"
-          echo "version=$SOURCE" >> "$GITHUB_OUTPUT"
-          echo "promoting $IMAGE@$DIGEST (built and verified on dev from $SOURCE)"
 
   deploy:
     needs: image
@@ -290,7 +256,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Retags by digest; nothing is rebuilt or re-uploaded.
-      #   dev:  :<sha>-verified (what main may promote) and :dev (what dev runs now)
+      #   dev:  :<sha>-verified and :dev (what dev runs now)
       #   main: :latest (what production runs now; the server compose falls back to it)
       - name: Mark image verified
         run: |

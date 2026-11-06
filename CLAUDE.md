@@ -4,21 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Git Workflow
 
-Work flows through the `dev` branch — **never PR a feature branch directly into `main`.**
+Changes go **straight into `main`**:
 
 ```
-feature branch  →  PR into dev  →  deploys to the DEV server  →  (tested)  PR dev → main  →  deploys to PRODUCTION
+feature branch  →  PR into main  →  merge deploys to PRODUCTION
 ```
 
-1. **Branch off `dev`** for every change (`git fetch && git checkout -b fix/... origin/dev`). Name it `feat/...`, `fix/...`, `chore/...`, `docs/...`.
-2. **Open the PR against `dev`**: always pass `--base dev` to `gh pr create` — the repository default is still `main`.
-3. **Merging into `dev` deploys to the dev server** (`https://mkauto.dev.time-4-action.com`). Check it there before promoting.
-4. **`dev` → `main` is a release**: a separate PR from `dev` into `main`, opened only when the user asks to release. Merging it deploys to production (`https://mkauto.time-4-action.com`).
-5. **Never push or commit directly to `dev` or `main`**, and never force-push them. Merges happen through PRs, by the user unless they ask otherwise.
-6. **Hotfix** (only when the user asks for one): PR the fix into `dev`, let it deploy green there, then open `dev` → `main` right away. A PR straight into `main` cannot deploy: production only runs images that were built and verified on `dev`.
-7. After a merge, a deploy is only done when the `ci` run is green and `/healthz` on that environment reports the expected `version` — the commit the image was built from on `dev` (for a `dev` → `main` release, the `dev` tip, not the merge commit). Check before saying it is deployed.
+1. **Branch off `main`** (`git fetch && git checkout -b fix/... origin/main`). Name it `feat/...`, `fix/...`, `chore/...`, `docs/...`.
+2. **Open the PR against `main`** (`gh pr create`). Grega reviews and merges; don't merge it yourself.
+3. **Merging into `main` deploys to production** (`https://mkauto.time-4-action.com`): the `ci` run builds the image and deploys it.
+4. **Never push or commit directly to `main`**, and never force-push it.
+5. The `dev` branch and the dev server (`https://mkauto.dev.time-4-action.com`) still work but are **optional**: push to `dev` only when you want to try something there first.
+6. After a merge, a deploy is only done when the `ci` run is green and `/healthz` reports the merge commit as `version` and `env: production`. Check before saying it is deployed.
 
-Dependabot PRs target `dev` and follow the same path.
+Dependabot PRs target `main` too.
 
 ## Environments
 
@@ -26,9 +25,9 @@ Dependabot PRs target `dev` and follow the same path.
 |---|---|---|
 | Branch | `dev` | `main` |
 | URL | `https://mkauto.dev.time-4-action.com` | `https://mkauto.time-4-action.com` |
-| Image | built once: `ghcr.io/time-4-action/t4a-mk-automation:<sha>` → `:<sha>-verified`, `:dev` | no build: the same digest, promoted → `:latest` |
-| Server | dev VM, behind Traefik | production VM, behind nginx |
-| Compose | `deploy/docker-compose.dev.yml` (loopback port 13010) | `deploy/docker-compose.yml` (port 3000) |
+| Image | built: `ghcr.io/time-4-action/t4a-mk-automation:<sha>` → `:<sha>-verified`, `:dev` | built: `:<sha>` → `:latest` once verified |
+| Server | dev VM, behind Traefik | t4a (`/srv/mk-automation`), behind Traefik |
+| Compose | `deploy/docker-compose.dev.yml` (loopback port 13010) | `deploy/docker-compose.t4a.yml` (loopback port 3000) |
 | Metakocka | `devmainsi.metakocka.si` (`MK_BASE_URL`) | `main.metakocka.si` |
 | `APP_ENV` | not set | `production` |
 
@@ -71,11 +70,10 @@ linted.
 
 ## CI/CD
 
-`.github/workflows/deploy.yml` (workflow `ci`): `check` → `image` → `deploy` → `verify`, **build once,
-promote the same image**. A push to `dev` builds `:<sha>` once and deploys it by digest; once the public
-`/healthz` reports that `version` and `env: development`, it is tagged `:<sha>-verified`. A push to `main`
-never builds: it finds the `dev` commit with main's exact git tree whose image is verified and deploys that
-digest (then `/healthz` must report `env: production`, and it is tagged `:latest`). Every deploy waits for
+`.github/workflows/deploy.yml` (workflow `ci`): `check` → `image` → `deploy` → `verify`. A push to `main`
+builds `:<sha>` and deploys it to production by digest; once the public `/healthz` reports that `version` and
+`env: production`, it is tagged `:latest`. A push to `dev` (optional) does the same on the dev server
+(`env: development`, tagged `:<sha>-verified` and `:dev`). Every deploy waits for
 `/healthz` and `APP_VERSION` on the VM and rolls back to the previous image otherwise. Never bake
 environment-specific values into the image — they belong in `/data/.env`. Details and server setup:
 `docs/deployment.md`.

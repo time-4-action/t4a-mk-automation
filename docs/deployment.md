@@ -1,28 +1,20 @@
 # Deployment
 
 `.github/workflows/deploy.yml` (workflow `ci`) runs `check` → `image` → `deploy` →
-`verify`. The image is **built once, on `dev`, and production gets that same image** —
-byte-for-byte what was verified on the dev server, never a rebuild.
-
-There are two environments, one per long-lived branch:
+`verify`. Pull requests go straight into `main`, and merging one deploys production:
 
 ```
-feature/fix branch ── PR ──► dev ── push ──► build :<sha> ──► DEV VM ──► verified ──► tag :<sha>-verified
-                               │
-                               └── PR dev → main (once tested on dev)
-                                         main ── push ──► NO build: same digest ──► PROD VM ──► tag :latest
+feature/fix branch ── PR ──► main ── push ──► build :<sha> ──► PROD (t4a) ──► verified ──► tag :latest
 ```
 
-Feature pull requests target `dev`. When a batch has been tried on dev, a pull
-request from `dev` into `main` releases it. **Hotfixes go through `dev` too**
-(PR into `dev`, wait for it to deploy green, then `dev` → `main`): code that was
-never built and verified on `dev` has no image `main` may deploy, and the run
-fails before touching production.
+The `dev` branch and dev server are optional: a push to `dev` builds and deploys
+there the same way (tagged `:<sha>-verified` and `:dev`), for trying something
+first. Nothing requires it.
 
-| | `dev` | `main` |
+| | `dev` (optional) | `main` |
 |---|---|---|
 | GitHub environment | `development` | `production` |
-| Image | built: `:<sha>` → `:<sha>-verified`, `:dev` | promoted digest → `:latest` |
+| Image | built: `:<sha>` → `:<sha>-verified`, `:dev` | built: `:<sha>` → `:latest` |
 | SSH secrets | `DEV_DEPLOY_*` | `PROD_DEPLOY_*` |
 | Server compose | `deploy/docker-compose.dev.yml` | `deploy/docker-compose.t4a.yml` (t4a, `/srv/mk-automation`) |
 | Public check | `https://mkauto.dev.time-4-action.com/healthz` (`DEV_URL` variable) | `https://mkauto.time-4-action.com/healthz` (`PRODUCTION_URL` variable) |
@@ -30,7 +22,7 @@ fails before touching production.
 
 The image is environment-neutral: whether it behaves as production is decided at
 runtime by `APP_ENV` in `/data/.env` (see Safety lock). Don't add per-environment
-build args — that would break build-once.
+build args.
 
 **check** runs on every pull request and every push: `npm ci` and `npm run lint`
 (ESLint, `eslint.config.js`). On pull requests it also runs a full `docker build`
@@ -41,11 +33,8 @@ its running check; runs on `main` are queued, so pushes deploy strictly in order
 **image** produces the image to deploy as an immutable `image@sha256:…` reference
 plus the commit it was built from:
 
-- on `dev` it builds the image (the only build) with the commit SHA baked in as
-  `APP_VERSION` and pushes `ghcr.io/time-4-action/t4a-mk-automation:<sha>`;
-- on `main` it builds nothing: it takes main's git tree, finds the `dev` commit
-  with the identical tree (the `dev` → `main` merge commit has the same tree as
-  the `dev` tip) and an image tagged `:<sha>-verified`, and uses that digest.
+it builds the image with the commit SHA baked in as `APP_VERSION` and pushes
+`ghcr.io/time-4-action/t4a-mk-automation:<sha>` (on `main` and on `dev` alike).
 
 **deploy** runs one at a time per environment. It SSHes to the VM as `deploy`
 and, in the `DEPLOY_DIR` variable's directory (production: `/srv/mk-automation` on t4a;
@@ -63,7 +52,7 @@ If 3 or 4 fails it prints the logs, rolls back to the recorded image and fails
 the run. **verify** then requests `/healthz` on the public URL and requires
 `ok: true`, `version` = the image's source commit and `env` = this environment
 (`development` / `production`). Only then is the image tagged — `:<sha>-verified`
-and `:dev` on dev (which makes it promotable), `:latest` in production.
+and `:dev` on dev, `:latest` in production.
 
 `/healthz` needs no API key and touches neither SQLite nor Metakocka, so an
 outage there never triggers a rollback.
