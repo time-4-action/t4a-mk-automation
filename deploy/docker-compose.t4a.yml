@@ -1,0 +1,34 @@
+# Production compose for /srv/mk-automation on t4a (Hetzner; time-4-action/t4a-infra, servers/t4a).
+# Save it there as docker-compose.yml. CI exports
+# APP_IMAGE=ghcr.io/time-4-action/t4a-mk-automation@sha256:<digest> (the image verified on dev);
+# without it this runs :latest. The server never builds; copy changes to this file by hand.
+#
+# Traefik (/srv/edge) routes mkauto.time-4-action.com here, behind Cloudflare.
+services:
+  t4a-mk-automation:
+    image: ${APP_IMAGE:-ghcr.io/time-4-action/t4a-mk-automation:latest}
+    container_name: t4a-mk-automation
+    # Loopback only, for CI's health check on the server (HOST_PORT 3000 in the workflow). The
+    # public way in is Traefik; Docker-published ports skip ufw, so never 0.0.0.0.
+    ports:
+      - "127.0.0.1:3000:3000"
+    # .env, cron.json, patrik.db and public/ live in ./data (see the Dockerfile ENVs).
+    volumes:
+      - ./data:/data
+    mem_limit: 768m
+    networks:
+      - edge
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.mkauto.rule=Host(`mkauto.time-4-action.com`)
+      - traefik.http.services.mkauto.loadbalancer.server.port=3000
+    logging:
+      options:
+        max-size: 10m
+        max-file: "3"
+    restart: unless-stopped
+
+networks:
+  edge:
+    external: true

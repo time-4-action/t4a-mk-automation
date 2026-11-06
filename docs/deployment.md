@@ -24,7 +24,7 @@ fails before touching production.
 | GitHub environment | `development` | `production` |
 | Image | built: `:<sha>` → `:<sha>-verified`, `:dev` | promoted digest → `:latest` |
 | SSH secrets | `DEV_DEPLOY_*` | `PROD_DEPLOY_*` |
-| Server compose | `deploy/docker-compose.dev.yml` | `deploy/docker-compose.yml` |
+| Server compose | `deploy/docker-compose.dev.yml` | `deploy/docker-compose.t4a.yml` (t4a, `/srv/mk-automation`) |
 | Public check | `https://mkauto.dev.time-4-action.com/healthz` (`DEV_URL` variable) | `https://mkauto.time-4-action.com/healthz` (`PRODUCTION_URL` variable) |
 | `APP_ENV` in `/data/.env` | **not set** | `production` |
 
@@ -48,8 +48,8 @@ plus the commit it was built from:
   the `dev` tip) and an image tagged `:<sha>-verified`, and uses that digest.
 
 **deploy** runs one at a time per environment. It SSHes to the VM as `deploy`
-and, in
-`/data/stack/apps/time-4-action/mk-automation`:
+and, in the `DEPLOY_DIR` variable's directory (production: `/srv/mk-automation` on t4a;
+default and dev: `/data/stack/apps/time-4-action/mk-automation`):
 
 1. records the image the running `t4a-mk-automation` container uses;
 2. logs in to `ghcr.io` with the job's own `GITHUB_TOKEN` (valid only while the
@@ -92,7 +92,40 @@ The SSH user is `deploy` unless the `DEPLOY_USER` repository variable names
 another. It must be in the `docker` group, be able to write the server
 directory, and have `curl`.
 
+## Production on t4a (since 2026-11-06)
+
+Production moved from t2 to t4a (Hetzner, `77.42.42.60`; time-4-action/t4a-infra,
+`servers/t4a`). What points the deploy there is set on the `production` environment
+only (environment secrets win over the organization secrets of the same name):
+
+| On the `production` environment | Value |
+|---|---|
+| secret `PROD_DEPLOY_HOST` | `77.42.42.60` |
+| secret `PROD_DEPLOY_SSH_KEY` | the private key `github-actions@t4a-mk-automation-t4a` (its public half is in `/home/deploy/.ssh/authorized_keys` on t4a) |
+| secret `PROD_DEPLOY_FINGERPRINT` | t4a's **ECDSA** host key, `SHA256:2wkXWs0QETKFiXKXbxbJRASeNd9I6zigPKVQGBtwfTk` (the action's Go SSH client picks ECDSA; the Ed25519 fingerprint fails with "host key fingerprint mismatch") |
+| variable `DEPLOY_DIR` | `/srv/mk-automation` |
+
+On t4a, `/srv/mk-automation` (owned by `deploy`) holds `docker-compose.yml`
+(= `deploy/docker-compose.t4a.yml`: Traefik labels for `mkauto.time-4-action.com`,
+loopback port 3000 for the health check) and `data/` (`.env`, `cron.json`,
+`patrik.db`, `public/`), mounted as `/data`. DNS: a proxied CNAME `mkauto` →
+`production.time-4-action.com` in the `time-4-action.com` zone, which overrides the
+`*` wildcard that still points at t2.
+
+The cutover: between two syncs (they run at :00/:15/:30/:45 and take seconds),
+`docker compose stop` on t2, copy `patrik.db`, `cron.json`, `.env` and `public/`,
+`docker compose up -d` on t4a with the same image, then the DNS record. The t2
+container and its directory are stopped, not deleted. To go back: delete the DNS
+record and the four environment settings above, start t2 again
+(`docker compose start` there) after copying `patrik.db` back, so no sync history
+is lost.
+
+Note: the app does not handle `SIGTERM`, so `docker compose stop` waits 10 s and
+kills it (exit 137). Stop it between syncs.
+
 ## Server setup (once) — migrating from Docker Hub
+
+(History: this was the t2 setup, before the move to t4a.)
 
 The server used to run `time4action/t4a-mk-automation` from Docker Hub, pushed
 by hand with `update.sh`. To switch:
