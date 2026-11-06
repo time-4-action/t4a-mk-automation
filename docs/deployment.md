@@ -1,36 +1,28 @@
 # Deployment
 
 `.github/workflows/deploy.yml` (workflow `ci`) runs `check` → `image` → `deploy` →
-`verify`. The image is **built once, on `dev`, and production gets that same image** —
-byte-for-byte what was verified on the dev server, never a rebuild.
-
-There are two environments, one per long-lived branch:
+`verify`. Pull requests go straight into `main`, and merging one deploys production:
 
 ```
-feature/fix branch ── PR ──► dev ── push ──► build :<sha> ──► DEV VM ──► verified ──► tag :<sha>-verified
-                               │
-                               └── PR dev → main (once tested on dev)
-                                         main ── push ──► NO build: same digest ──► PROD VM ──► tag :latest
+feature/fix branch ── PR ──► main ── push ──► build :<sha> ──► PROD (t4a) ──► verified ──► tag :latest
 ```
 
-Feature pull requests target `dev`. When a batch has been tried on dev, a pull
-request from `dev` into `main` releases it. **Hotfixes go through `dev` too**
-(PR into `dev`, wait for it to deploy green, then `dev` → `main`): code that was
-never built and verified on `dev` has no image `main` may deploy, and the run
-fails before touching production.
+The `dev` branch and dev server are optional: a push to `dev` builds and deploys
+there the same way (tagged `:<sha>-verified` and `:dev`), for trying something
+first. Nothing requires it.
 
-| | `dev` | `main` |
+| | `dev` (optional) | `main` |
 |---|---|---|
 | GitHub environment | `development` | `production` |
-| Image | built: `:<sha>` → `:<sha>-verified`, `:dev` | promoted digest → `:latest` |
+| Image | built: `:<sha>` → `:<sha>-verified`, `:dev` | built: `:<sha>` → `:latest` |
 | SSH secrets | `DEV_DEPLOY_*` | `PROD_DEPLOY_*` |
-| Server compose | `deploy/docker-compose.dev.yml` | `deploy/docker-compose.yml` |
+| Server compose | `deploy/docker-compose.dev.yml` | `deploy/docker-compose.t4a.yml` (t4a, `/srv/mk-automation`) |
 | Public check | `https://mkauto.dev.time-4-action.com/healthz` (`DEV_URL` variable) | `https://mkauto.time-4-action.com/healthz` (`PRODUCTION_URL` variable) |
 | `APP_ENV` in `/data/.env` | **not set** | `production` |
 
 The image is environment-neutral: whether it behaves as production is decided at
 runtime by `APP_ENV` in `/data/.env` (see Safety lock). Don't add per-environment
-build args — that would break build-once.
+build args.
 
 **check** runs on every pull request and every push: `npm ci` and `npm run lint`
 (ESLint, `eslint.config.js`). On pull requests it also runs a full `docker build`
@@ -41,15 +33,12 @@ its running check; runs on `main` are queued, so pushes deploy strictly in order
 **image** produces the image to deploy as an immutable `image@sha256:…` reference
 plus the commit it was built from:
 
-- on `dev` it builds the image (the only build) with the commit SHA baked in as
-  `APP_VERSION` and pushes `ghcr.io/time-4-action/t4a-mk-automation:<sha>`;
-- on `main` it builds nothing: it takes main's git tree, finds the `dev` commit
-  with the identical tree (the `dev` → `main` merge commit has the same tree as
-  the `dev` tip) and an image tagged `:<sha>-verified`, and uses that digest.
+it builds the image with the commit SHA baked in as `APP_VERSION` and pushes
+`ghcr.io/time-4-action/t4a-mk-automation:<sha>` (on `main` and on `dev` alike).
 
 **deploy** runs one at a time per environment. It SSHes to the VM as `deploy`
-and, in
-`/data/stack/apps/time-4-action/mk-automation`:
+and, in the `DEPLOY_DIR` variable's directory (production: `/srv/mk-automation` on t4a;
+default and dev: `/data/stack/apps/time-4-action/mk-automation`):
 
 1. records the image the running `t4a-mk-automation` container uses;
 2. logs in to `ghcr.io` with the job's own `GITHUB_TOKEN` (valid only while the
@@ -63,7 +52,7 @@ If 3 or 4 fails it prints the logs, rolls back to the recorded image and fails
 the run. **verify** then requests `/healthz` on the public URL and requires
 `ok: true`, `version` = the image's source commit and `env` = this environment
 (`development` / `production`). Only then is the image tagged — `:<sha>-verified`
-and `:dev` on dev (which makes it promotable), `:latest` in production.
+and `:dev` on dev, `:latest` in production.
 
 `/healthz` needs no API key and touches neither SQLite nor Metakocka, so an
 outage there never triggers a rollback.
@@ -92,7 +81,40 @@ The SSH user is `deploy` unless the `DEPLOY_USER` repository variable names
 another. It must be in the `docker` group, be able to write the server
 directory, and have `curl`.
 
+## Production on t4a (since 2026-11-06)
+
+Production moved from t2 to t4a (Hetzner, `77.42.42.60`; time-4-action/t4a-infra,
+`servers/t4a`). What points the deploy there is set on the `production` environment
+only (environment secrets win over the organization secrets of the same name):
+
+| On the `production` environment | Value |
+|---|---|
+| secret `PROD_DEPLOY_HOST` | `77.42.42.60` |
+| secret `PROD_DEPLOY_SSH_KEY` | the private key `github-actions@t4a-mk-automation-t4a` (its public half is in `/home/deploy/.ssh/authorized_keys` on t4a) |
+| secret `PROD_DEPLOY_FINGERPRINT` | t4a's **ECDSA** host key, `SHA256:2wkXWs0QETKFiXKXbxbJRASeNd9I6zigPKVQGBtwfTk` (the action's Go SSH client picks ECDSA; the Ed25519 fingerprint fails with "host key fingerprint mismatch") |
+| variable `DEPLOY_DIR` | `/srv/mk-automation` |
+
+On t4a, `/srv/mk-automation` (owned by `deploy`) holds `docker-compose.yml`
+(= `deploy/docker-compose.t4a.yml`: Traefik labels for `mkauto.time-4-action.com`,
+loopback port 3000 for the health check) and `data/` (`.env`, `cron.json`,
+`patrik.db`, `public/`), mounted as `/data`. DNS: a proxied CNAME `mkauto` →
+`production.time-4-action.com` in the `time-4-action.com` zone, which overrides the
+`*` wildcard that still points at t2.
+
+The cutover: between two syncs (they run at :00/:15/:30/:45 and take seconds),
+`docker compose stop` on t2, copy `patrik.db`, `cron.json`, `.env` and `public/`,
+`docker compose up -d` on t4a with the same image, then the DNS record. The t2
+container and its directory are stopped, not deleted. To go back: delete the DNS
+record and the four environment settings above, start t2 again
+(`docker compose start` there) after copying `patrik.db` back, so no sync history
+is lost.
+
+Note: the app does not handle `SIGTERM`, so `docker compose stop` waits 10 s and
+kills it (exit 137). Stop it between syncs.
+
 ## Server setup (once) — migrating from Docker Hub
+
+(History: this was the t2 setup, before the move to t4a.)
 
 The server used to run `time4action/t4a-mk-automation` from Docker Hub, pushed
 by hand with `update.sh`. To switch:

@@ -1,12 +1,11 @@
 # Dependency updates, batched so they arrive as at most one pull request per
 # ecosystem a month. Each one goes through the `check` job like any other pull
-# request. Major npm versions are left to a deliberate upgrade. They target `dev`, so
-# updates are tried on the dev server before they reach production.
+# request. Major npm versions are left to a deliberate upgrade. They target `main`
+# (the default branch), like every other pull request.
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /
-    target-branch: dev
     schedule:
       interval: monthly
     open-pull-requests-limit: 2
@@ -19,7 +18,6 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
-    target-branch: dev
     schedule:
       interval: monthly
     groups:
