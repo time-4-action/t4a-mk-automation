@@ -14,22 +14,24 @@ feature branch  →  PR into main  →  merge deploys to PRODUCTION
 2. **Open the PR against `main`** (`gh pr create`). Grega reviews and merges; don't merge it yourself.
 3. **Merging into `main` deploys to production** (`https://mkauto.time-4-action.com`): the `ci` run builds the image and deploys it.
 4. **Never push or commit directly to `main`**, and never force-push it.
-5. The `dev` branch and the dev server (`https://mkauto.dev.time-4-action.com`) still work but are **optional**: push to `dev` only when you want to try something there first.
+5. There is no dev server (switched off 2026-11-06). Try changes locally (`npm run dev` against the Metakocka test system) before the PR.
 6. After a merge, a deploy is only done when the `ci` run is green and `/healthz` reports the merge commit as `version` and `env: production`. Check before saying it is deployed.
 
 Dependabot PRs target `main` too.
 
 ## Environments
 
-| | dev | production |
+| | local (laptop) | production |
 |---|---|---|
-| Branch | `dev` | `main` |
-| URL | `https://mkauto.dev.time-4-action.com` | `https://mkauto.time-4-action.com` |
-| Image | built: `ghcr.io/time-4-action/t4a-mk-automation:<sha>` → `:<sha>-verified`, `:dev` | built: `:<sha>` → `:latest` once verified |
-| Server | dev VM, behind Traefik | t4a (`/srv/mk-automation`), behind Traefik |
-| Compose | `deploy/docker-compose.dev.yml` (loopback port 13010) | `deploy/docker-compose.t4a.yml` (loopback port 3000) |
+| Branch | any | `main` |
+| URL | `http://localhost:3000` | `https://mkauto.time-4-action.com` |
+| Image | none (`npm run dev`) or a local build | built: `ghcr.io/time-4-action/t4a-mk-automation:<sha>` → `:latest` once verified |
+| Server | your machine | t4a (`/srv/mk-automation`), behind Traefik |
+| Compose | root `docker-compose.yml` (local build) | `deploy/docker-compose.t4a.yml` (loopback port 3000) |
 | Metakocka | `devmainsi.metakocka.si` (`MK_BASE_URL`) | `main.metakocka.si` |
 | `APP_ENV` | not set | `production` |
+
+There is no dev server any more (switched off 2026-11-06).
 
 `/healthz` (no auth, no DB) returns `{ ok, version, env }`; every page shows the version badge
 (`public/version.js`), blue `DEV · <sha>` outside production.
@@ -43,7 +45,7 @@ on every call.
 - Any new outbound integration that has a production endpoint must be added to `PRODUCTION_HOSTS` and,
   if configured by a setting, to the startup check.
 - Settings must never silently default to a production address in non-production code paths.
-- Never put production credentials in the dev `.env`, examples, tests or commits.
+- Never put production credentials in a local `.env`, examples, tests or commits.
 - All outbound HTTP goes through the default `axios` instance so the interceptor sees it — don't use
   `axios.create()`, `fetch` or `https` directly for external calls.
 
@@ -72,8 +74,7 @@ linted.
 
 `.github/workflows/deploy.yml` (workflow `ci`): `check` → `image` → `deploy` → `verify`. A push to `main`
 builds `:<sha>` and deploys it to production by digest; once the public `/healthz` reports that `version` and
-`env: production`, it is tagged `:latest`. A push to `dev` (optional) does the same on the dev server
-(`env: development`, tagged `:<sha>-verified` and `:dev`). Every deploy waits for
+`env: production`, it is tagged `:latest`. Every deploy waits for
 `/healthz` and `APP_VERSION` on the VM and rolls back to the previous image otherwise. Never bake
 environment-specific values into the image — they belong in `/data/.env`. Details and server setup:
 `docs/deployment.md`.

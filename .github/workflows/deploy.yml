@@ -3,20 +3,18 @@
 #   pull request  lint + a Docker build that is not pushed.
 #   push to main  build the image, push it as :<sha>, deploy it to production by digest and check
 #                 it from outside. Only then is it tagged :latest.
-#   push to dev   (optional, to try something on the dev VM first) the same, to the dev VM; tagged
-#                 :<sha>-verified and :dev once dev is verified.
 #
-# Pull requests go straight into main; merging one deploys production (CLAUDE.md).
+# Pull requests go straight into main; merging one deploys production (CLAUDE.md). There is no
+# dev server any more (switched off 2026-11-06).
 #
-#   dev  -> development env, DEV_DEPLOY_* secrets,  mkauto.dev.time-4-action.com
 #   main -> production env,  PROD_DEPLOY_* secrets, mkauto.time-4-action.com
 #
-# The image is environment-neutral: production vs dev is decided at runtime by APP_ENV in the
+# The image is environment-neutral: production is decided at runtime by APP_ENV in the
 # server's /data/.env (src/config/envGuard.js). The VMs only pull; see docs/deployment.md.
 name: ci
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -32,12 +30,11 @@ permissions:
 env:
   IMAGE: ghcr.io/time-4-action/t4a-mk-automation
   # Host port the server's compose publishes, for the health check on the VM
-  # The dev VM hosts several apps, so each gets its own (see deploy/docker-compose.dev.yml).
-  HOST_PORT: ${{ github.ref_name == 'main' && '3000' || '13010' }}
-  # Overridable with the PRODUCTION_URL / DEV_URL repository variables.
-  PUBLIC_URL: ${{ github.ref_name == 'main' && (vars.PRODUCTION_URL || 'https://mkauto.time-4-action.com') || (vars.DEV_URL || 'https://mkauto.dev.time-4-action.com') }}
+  HOST_PORT: '3000'
+  # Overridable with the PRODUCTION_URL repository variable.
+  PUBLIC_URL: ${{ vars.PRODUCTION_URL || 'https://mkauto.time-4-action.com' }}
   # What /healthz must report as `env` (APP_ENV=production only in production's /data/.env).
-  EXPECTED_ENV: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+  EXPECTED_ENV: production
 
 jobs:
   check:
@@ -72,7 +69,7 @@ jobs:
   # was built from, which the server and the public health check must then report.
   image:
     needs: check
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -118,20 +115,19 @@ jobs:
     # The *_DEPLOY_* SSH secrets are organization secrets. GHCR needs none: the job's own
     # GITHUB_TOKEN lets the VM pull. Each environment only accepts its own branch (repository
     # settings); production can additionally require a reviewer to approve the deploy.
-    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+    environment: production
     permissions:
       contents: read
       packages: read
     concurrency:
-      group: deploy-${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+      group: deploy-prod
       cancel-in-progress: false
     timeout-minutes: 30
     steps:
-      # The `main && PROD || DEV` picks below would fall through to the dev server if the
-      # production secret were empty; fail loudly instead.
+      # Fail loudly if the production secret is empty or not shared with this repository.
       - name: Check deploy secrets
         env:
-          HOST: ${{ github.ref_name == 'main' && secrets.PROD_DEPLOY_HOST || '' }}${{ github.ref_name != 'main' && secrets.DEV_DEPLOY_HOST || '' }}
+          HOST: ${{ secrets.PROD_DEPLOY_HOST }}
         run: |
           [ -n "$HOST" ] || { echo "::error::deploy host secret for ${{ github.ref_name }} is empty or not shared with this repository"; exit 1; }
 
@@ -140,18 +136,18 @@ jobs:
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          host: ${{ github.ref_name == 'main' && secrets.PROD_DEPLOY_HOST || secrets.DEV_DEPLOY_HOST }}
+          host: ${{ secrets.PROD_DEPLOY_HOST }}
           # The SSH login on the VM; override with the DEPLOY_USER variable.
           username: ${{ vars.DEPLOY_USER || 'deploy' }}
-          key: ${{ github.ref_name == 'main' && secrets.PROD_DEPLOY_SSH_KEY || secrets.DEV_DEPLOY_SSH_KEY }}
-          fingerprint: ${{ github.ref_name == 'main' && secrets.PROD_DEPLOY_FINGERPRINT || secrets.DEV_DEPLOY_FINGERPRINT }}
+          key: ${{ secrets.PROD_DEPLOY_SSH_KEY }}
+          fingerprint: ${{ secrets.PROD_DEPLOY_FINGERPRINT }}
           timeout: 30s
           command_timeout: 15m
           envs: GHCR_USER,GHCR_TOKEN
           script: |
             set -u
             # DEPLOY_DIR: a variable of the `production` environment (production on t4a:
-            # /srv/mk-automation, docs/deployment.md). The dev VM uses the default.
+            # /srv/mk-automation, docs/deployment.md).
             cd ${{ vars.DEPLOY_DIR || '/data/stack/apps/time-4-action/mk-automation' }} || exit 1
             # Pinned by digest: exactly the image the `image` job produced, never a moved tag.
             NEW=${{ needs.image.outputs.ref }}
@@ -255,13 +251,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Retags by digest; nothing is rebuilt or re-uploaded.
-      #   dev:  :<sha>-verified and :dev (what dev runs now)
-      #   main: :latest (what production runs now; the server compose falls back to it)
+      # Retags by digest; nothing is rebuilt or re-uploaded. :latest is what production runs now
+      # (the server compose falls back to it).
       - name: Mark image verified
-        run: |
-          if [ "$GITHUB_REF_NAME" = main ]; then
-            docker buildx imagetools create -t "$IMAGE:latest" "$REF"
-          else
-            docker buildx imagetools create -t "$IMAGE:$VERSION-verified" -t "$IMAGE:dev" "$REF"
-          fi
+        run: docker buildx imagetools create -t "$IMAGE:latest" "$REF"

@@ -7,18 +7,16 @@
 feature/fix branch ── PR ──► main ── push ──► build :<sha> ──► PROD (t4a) ──► verified ──► tag :latest
 ```
 
-The `dev` branch and dev server are optional: a push to `dev` builds and deploys
-there the same way (tagged `:<sha>-verified` and `:dev`), for trying something
-first. Nothing requires it.
+There is no dev server any more (switched off 2026-11-06): try changes locally first.
 
-| | `dev` (optional) | `main` |
-|---|---|---|
-| GitHub environment | `development` | `production` |
-| Image | built: `:<sha>` → `:<sha>-verified`, `:dev` | built: `:<sha>` → `:latest` |
-| SSH secrets | `DEV_DEPLOY_*` | `PROD_DEPLOY_*` |
-| Server compose | `deploy/docker-compose.dev.yml` | `deploy/docker-compose.t4a.yml` (t4a, `/srv/mk-automation`) |
-| Public check | `https://mkauto.dev.time-4-action.com/healthz` (`DEV_URL` variable) | `https://mkauto.time-4-action.com/healthz` (`PRODUCTION_URL` variable) |
-| `APP_ENV` in `/data/.env` | **not set** | `production` |
+| | `main` |
+|---|---|
+| GitHub environment | `production` |
+| Image | built: `:<sha>` → `:latest` |
+| SSH secrets | `PROD_DEPLOY_*` (overridden on the `production` environment, below) |
+| Server compose | `deploy/docker-compose.t4a.yml` (t4a, `/srv/mk-automation`) |
+| Public check | `https://mkauto.time-4-action.com/healthz` (`PRODUCTION_URL` variable) |
+| `APP_ENV` in `/data/.env` | `production` |
 
 The image is environment-neutral: whether it behaves as production is decided at
 runtime by `APP_ENV` in `/data/.env` (see Safety lock). Don't add per-environment
@@ -34,11 +32,11 @@ its running check; runs on `main` are queued, so pushes deploy strictly in order
 plus the commit it was built from:
 
 it builds the image with the commit SHA baked in as `APP_VERSION` and pushes
-`ghcr.io/time-4-action/t4a-mk-automation:<sha>` (on `main` and on `dev` alike).
+`ghcr.io/time-4-action/t4a-mk-automation:<sha>`.
 
 **deploy** runs one at a time per environment. It SSHes to the VM as `deploy`
-and, in the `DEPLOY_DIR` variable's directory (production: `/srv/mk-automation` on t4a;
-default and dev: `/data/stack/apps/time-4-action/mk-automation`):
+and, in the `DEPLOY_DIR` variable's directory (`/srv/mk-automation` on t4a; the default,
+`/data/stack/apps/time-4-action/mk-automation`, was t2's):
 
 1. records the image the running `t4a-mk-automation` container uses;
 2. logs in to `ghcr.io` with the job's own `GITHUB_TOKEN` (valid only while the
@@ -51,8 +49,7 @@ default and dev: `/data/stack/apps/time-4-action/mk-automation`):
 If 3 or 4 fails it prints the logs, rolls back to the recorded image and fails
 the run. **verify** then requests `/healthz` on the public URL and requires
 `ok: true`, `version` = the image's source commit and `env` = this environment
-(`development` / `production`). Only then is the image tagged — `:<sha>-verified`
-and `:dev` on dev, `:latest` in production.
+(`production`). Only then is the image tagged `:latest`.
 
 `/healthz` needs no API key and touches neither SQLite nor Metakocka, so an
 outage there never triggers a rollback.
@@ -144,7 +141,7 @@ production. Unless `/data/.env` has `APP_ENV=production`, the app:
 - **blocks every outbound call** to `main.metakocka.si` or Better Stack, as a
   backup.
 
-Dev and laptops point at the Metakocka test system with
+Laptops (local development) point at the Metakocka test system with
 `MK_BASE_URL=https://devmainsi.metakocka.si/rest/eshop`
 (`config/config.json`'s `baseUrl` is the production default). `/healthz` reports
 `env`, and outside production the version badge on every page turns blue and
@@ -152,27 +149,6 @@ reads `DEV · <sha>`.
 
 **Only the production `.env` may contain `APP_ENV=production`.** If it is
 missing there, production refuses to start and the deploy rolls back.
-
-## Dev environment (server setup, once)
-
-The dev VM is a separate machine. Docker, the `deploy` user and its CI SSH key
-are set up as on production, with their own key and the `DEV_DEPLOY_HOST`,
-`DEV_DEPLOY_SSH_KEY`, `DEV_DEPLOY_FINGERPRINT` organization secrets.
-
-DNS and TLS need no per-app work: Cloudflare has one `*.dev.time-4-action.com`
-A record (DNS only, grey cloud) pointing at the dev VM, and Traefik
-(`/data/stack/infra/traefik`) holds a Let's Encrypt wildcard certificate
-renewed over the Cloudflare DNS API. An app gets its dev domain from the
-`traefik.*` labels in its dev compose file and must join the external `web`
-network.
-
-For this app, in `/data/stack/apps/time-4-action/mk-automation` on the dev VM,
-owned by `deploy`:
-
-- `docker-compose.yml` = `deploy/docker-compose.dev.yml` (health-check port `127.0.0.1:13010`, since other dev apps use 3000);
-- `.env` from `deploy/dev.env.example`: devmainsi credentials for **both** T4A
-  and CREAGLOBE, no `APP_ENV`, no heartbeat. Never copy the production `.env`;
-- `cron.json` (a copy of the repo's is fine — the schedules sync devmainsi).
 
 ## Dependency updates
 
