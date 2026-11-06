@@ -184,7 +184,9 @@ jobs:
           envs: GHCR_USER,GHCR_TOKEN
           script: |
             set -u
-            cd /data/stack/apps/time-4-action/mk-automation || exit 1
+            # DEPLOY_DIR: a variable of the `production` environment (production on t4a:
+            # /srv/mk-automation, docs/deployment.md). The dev VM uses the default.
+            cd ${{ vars.DEPLOY_DIR || '/data/stack/apps/time-4-action/mk-automation' }} || exit 1
             # Pinned by digest: exactly the image the `image` job produced, never a moved tag.
             NEW=${{ needs.image.outputs.ref }}
             VERSION=${{ needs.image.outputs.version }}
