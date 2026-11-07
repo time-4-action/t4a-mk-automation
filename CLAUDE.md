@@ -78,8 +78,8 @@ builds `:<sha>` and deploys it to production by digest; once the public `/health
 environment-specific values into the image — they belong in `/data/.env`. Details and server setup:
 `docs/deployment.md`.
 
-The servers only swap images. `.env`, `cron.json`, `patrik.db` and `public/` live in the mounted `/data`
-directory on each server and are edited by hand there.
+The servers only swap images. `.env`, `cron.json` and `public/` live in the mounted `/data`
+directory on each server and are edited by hand there. Run history and mappings are in Postgres (`DATABASE_URL`).
 
 ## Architecture
 
@@ -87,8 +87,11 @@ One Express app (`index.js`, port 3000) that syncs Metakocka data one way, **T4A
 source of truth and is never written to):
 
 - **Warehouse stock**, **products**, **customers** (partners) and **pricelists**, each with a cron schedule
-  from `cron.json` (`CRON_FILE_PATH`), a "run now" API, and run history in SQLite (`better-sqlite3`,
-  `DB_FILE_PATH`; tables `*_sync_log`, `sync_runs`, `pricelist_map`).
+  from `cron.json` (`CRON_FILE_PATH`), a "run now" API, and run history in Postgres (`postgres` driver, `DATABASE_URL`; schema and
+  migrations in `src/db.js`; tables `*_sync_log`, `sync_runs`, `pricelist_map`). Migrations run at boot;
+  append new ones, never edit a shipped one. API rows keep the old SQLite shape (timestamps
+  `"YYYY-MM-DD HH:MM:SS"` UTC, flags 0/1) because t4a-admin parses them. `src/sqliteImport.js` copies the old
+  `patrik.db` in once at boot (to be removed after the move, see `docs/deployment.md`).
 - Sync logic lives in `src/services/*SyncService.js`; Metakocka endpoints in `config/config.json`.
 - `/api/v1/*` routes; mutating ones require the `x-api-key` header (`API_KEY`). Schedules are validated with
   both `cron-validator` and `node-cron`'s `validate`; an invalid schedule in `cron.json` leaves that job

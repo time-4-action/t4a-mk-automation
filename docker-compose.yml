@@ -1,4 +1,6 @@
-# Local build. The server runs deploy/docker-compose.yml, which pulls from GHCR.
+# Local build. The server runs deploy/docker-compose.t4a.yml, which pulls from GHCR.
+# `docker compose up -d postgres` alone gives `npm run dev` its database
+# (DATABASE_URL=postgres://mk:mk@localhost:5432/mk-automation, as in .env.example).
 services:
   t4a-mk-automation:
     build: .
@@ -7,3 +9,23 @@ services:
       - "3000:3000"
     volumes:
       - ./tmp/data:/data
+    environment:
+      DATABASE_URL: postgres://mk:mk@postgres:5432/mk-automation
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: mk
+      POSTGRES_PASSWORD: mk
+      POSTGRES_DB: mk-automation
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ./tmp/postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mk -d mk-automation"]
+      interval: 2s
+      retries: 15

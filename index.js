@@ -10,7 +10,6 @@ const cron = require("node-cron");
 const express = require("express");
 const { isValidCron } = require("cron-validator");
 const { CronExpressionParser } = require("cron-parser");
-const Database = require('better-sqlite3');
 // eslint-disable-next-line no-unused-vars -- used by the retired ProMode block (warehouse sync, Step 2)
 const csv = require('csv-parser');
 // eslint-disable-next-line no-unused-vars -- used by the retired ProMode block (warehouse sync, Step 2)
@@ -21,6 +20,9 @@ const { loadCronExpression } = require("./cron");
 // After cron.js has loaded the .env and before any service runs: refuses production targets
 // unless APP_ENV=production, and applies MK_BASE_URL.
 const { IS_PRODUCTION } = require("./src/config/envGuard");
+// Postgres (DATABASE_URL, loaded from the .env above). Tables: src/db.js.
+const { sql, migrate } = require("./src/db");
+const { importSqlite } = require("./src/sqliteImport");
 const config = require("./config/config.json");
 const { productsSync, PRODUCTS_SYNC_PARAMS } = require("./src/services/productSyncService");
 const { customersSync } = require("./src/services/customerSyncService");
@@ -64,122 +66,15 @@ app.use((req, res, next) => {
     next();
 });
 
-// SQLite database
-const db = new Database(process.env.DB_FILE_PATH || "./db/patrik.db");
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS warehouse_sync_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    link TEXT,
-    sync_name TEXT DEFAULT 'T4A',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`).run();
-
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS product_sync_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sync_name TEXT,              -- e.g., timestamped JSON file name
-    status TEXT,                 -- "new" or "updated" for this batch
-    source_warehouse TEXT,       -- warehouse name the data came from
-    target_warehouse TEXT,       -- warehouse name the data is synced to
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`).run();
-
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS customer_sync_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sync_name TEXT,              -- timestamped JSON file name
-    source_company TEXT,        -- 'T4A'
-    target_company TEXT,        -- 'CREAGLOBE'
-    created INTEGER,            -- partners created in target this run
-    updated INTEGER,           -- partners updated in target this run
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`).run();
-
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS pricelist_sync_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sync_name TEXT,              -- timestamped JSON file name
-    source_company TEXT,         -- 'T4A'
-    target_company TEXT,         -- 'CREAGLOBE'
-    added INTEGER,               -- product/price rows added to a target list this run
-    updated INTEGER,             -- product/price rows updated in a target list this run
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`).run();
-
-// Source → target price-list pairs, entered by a human.
-//
-// This table is the whole safety mechanism of the pricelist sync. A price list's
-// count_code is a per-company counter and does NOT identify the same list across the two
-// companies — live data has T4A 7 = "PP GOLD 2026" against CREAGLOBE 7 = "PP BRONZE 2026".
-// Syncing by code would write GOLD prices into BRONZE, so nothing is ever synced that is
-// not explicitly paired here. Identity is (sales_purchase, count_code): Metakocka numbers
-// sales and purchase lists separately, so the code alone is ambiguous even within one
-// company.
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS pricelist_map (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_code TEXT NOT NULL,             -- T4A price list count_code
-    source_sales_purchase TEXT NOT NULL DEFAULT 'sales',
-    source_title TEXT,                     -- snapshot, for display when a list goes empty
-    target_code TEXT NOT NULL,             -- CREAGLOBE price list count_code
-    target_sales_purchase TEXT NOT NULL DEFAULT 'sales',
-    target_title TEXT,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    allow_unseen_target INTEGER NOT NULL DEFAULT 0,
-    -- Safety rail: refuse any single price move larger than this percentage and report it
-    -- instead of writing. NULL = no limit. Exists because two mapped lists can hold
-    -- different KINDS of number (live data had CREAGLOBE storing gross where T4A stores
-    -- net), and a blind sync would then rewrite a whole catalogue by the VAT factor.
-    max_change_pct REAL,
-    -- (default_tax was dropped: VAT is mirrored 1:1 from T4A, so a blank one becomes the 0%
-    -- code automatically and there is nothing for a human to choose. The column is left in
-    -- place, unused, so existing databases need no migration.)
-    default_tax TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`).run();
-// One source list may only be mapped once — two mappings for the same source would race
-// each other writing different prices onto the same products.
-db.prepare(`
-  CREATE UNIQUE INDEX IF NOT EXISTS pricelist_map_source_unique
-  ON pricelist_map (source_sales_purchase, source_code)
-`).run();
-
-// Unified run history for the admin "Automation" page: one row per warehouse/product
-// sync (scheduled or manual) with its outcome, duration and item count. node-cron exposes
-// no last-run/next-run info, so we track it ourselves here.
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS sync_runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    type TEXT,                   -- 'warehouse' | 'products' | 'customers' | 'pricelists'
-    trigger TEXT,                -- 'manual' | 'schedule'
-    status TEXT,                 -- 'running' | 'ok' | 'error'
-    item_count INTEGER,
-    error TEXT,
-    details TEXT,                -- JSON: per-warehouse breakdown / product change buckets + error list
-    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    finished_at DATETIME,
-    duration_ms INTEGER
-  )
-`).run();
-// Back-fill columns added to pricelist_map after the table first shipped.
-try { db.prepare(`ALTER TABLE pricelist_map ADD COLUMN max_change_pct REAL`).run(); } catch (e) { /* column already exists */ }
-try { db.prepare(`ALTER TABLE pricelist_map ADD COLUMN default_tax TEXT`).run(); } catch (e) { /* column already exists */ }
-
-// Back-fill the details column on databases created before it existed.
-try { db.prepare(`ALTER TABLE sync_runs ADD COLUMN details TEXT`).run(); } catch (e) { /* column already exists */ }
-
 // Holds the warehouse sync cron job instance for later control
 var WAREHOUSE_SYNC_CRON_JOB;
 var PRODUCT_SYNC_CRON_JOB;
 var CUSTOMER_SYNC_CRON_JOB;
 var PRICELIST_SYNC_CRON_JOB;
 
+// Schema first: the crons and routes below all need the tables. If Postgres is unreachable
+// the process exits, and the deploy rolls back to the previous image.
+async function boot() {
 // Load initial cron expression (e.g., "*/5 * * * *" → every 5 minutes)
 const initialCronExpression = loadCronExpression();
 
@@ -202,6 +97,12 @@ startOrUpdateCustomersCron(initialCustomerCronExpression);
 // often than someone would want to review it. A run with no mappings configured is a no-op.
 const initialPricelistCronExpression = loadCronExpression("pricelistSync") || "0 4 * * *";
 startOrUpdatePricelistsCron(initialPricelistCronExpression);
+
+// Start server
+app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+});
+}
 
 // API key from environment for route authentication
 const API_KEY = process.env.API_KEY;
@@ -253,7 +154,7 @@ function authenticate(req, res, next) {
 }
 
 // Liveness probe for the deploy and the public check. No auth and no DB, so an outage of
-// Metakocka or SQLite never triggers a rollback.
+// Metakocka or Postgres never triggers a rollback.
 app.get("/healthz", (req, res) => {
     res.json({ ok: true, version: process.env.APP_VERSION || "dev", env: IS_PRODUCTION ? "production" : "development" });
 });
@@ -266,8 +167,8 @@ app.get("/api/v1/uptime", (req, res) => {
 
 // POST endpoint to trigger warehouse data sync. Runs in the background and records the
 // outcome in sync_runs; responds 202 immediately (or 409 if a sync is already running).
-app.post("/api/v1/warehouse/sync", authenticate, (req, res) => {
-    const r = runWarehouseSync("manual");
+app.post("/api/v1/warehouse/sync", authenticate, async (req, res) => {
+    const r = await runWarehouseSync("manual");
     if (!r.started) {
         return res.status(409).json({ error: "A warehouse sync is already running." });
     }
@@ -278,12 +179,12 @@ app.get("/api/v1/warehouse/sync/logs", async (req, res) => {
     try {
         const limit = parseInt(req.query.limit) || 10;
 
-        const rows = db.prepare(`
+        const rows = await sql`
             SELECT link, sync_name, created_at
             FROM warehouse_sync_log
             ORDER BY created_at DESC
-            LIMIT ?
-        `).all(limit);
+            LIMIT ${limit}
+        `;
 
         res.json(rows);
     } catch (err) {
@@ -364,8 +265,8 @@ app.get("/api/v1/schedules/warehouse-sync", async (req, res) => {
 
 
 // POST endpoint to trigger product sync. Background + recorded; 202 (or 409 if running).
-app.post("/api/v1/products/sync", authenticate, (req, res) => {
-    const r = runProductSync("manual");
+app.post("/api/v1/products/sync", authenticate, async (req, res) => {
+    const r = await runProductSync("manual");
     if (!r.started) {
         return res.status(409).json({ error: "A product sync is already running." });
     }
@@ -375,12 +276,12 @@ app.post("/api/v1/products/sync", authenticate, (req, res) => {
 app.get("/api/v1/products/sync/logs", async (req, res) => {
     try {
         const limit = parseInt(req.query.limit) || 10;
-        const rows = db.prepare(`
+        const rows = await sql`
             SELECT sync_name, status, source_warehouse, target_warehouse, created_at
             FROM product_sync_log
             ORDER BY created_at DESC
-            LIMIT ?
-        `).all(limit);
+            LIMIT ${limit}
+        `;
 
         res.json(rows);
     } catch (err) {
@@ -444,9 +345,9 @@ app.get("/api/v1/schedules/product-sync", async (req, res) => {
 // POST endpoint to trigger customer sync. Background + recorded; 202 (or 409 if running).
 // Pass ?dryRun=true to compute the plan (matches / creates / updates) WITHOUT writing to
 // CREAGLOBE — the run is still recorded so you can preview it in the admin.
-app.post("/api/v1/customers/sync", authenticate, (req, res) => {
+app.post("/api/v1/customers/sync", authenticate, async (req, res) => {
     const dryRun = req.query.dryRun === "true" || req.query.dryRun === "1";
-    const r = runCustomerSync("manual", { dryRun });
+    const r = await runCustomerSync("manual", { dryRun });
     if (!r.started) {
         return res.status(409).json({ error: "A customer sync is already running." });
     }
@@ -456,12 +357,12 @@ app.post("/api/v1/customers/sync", authenticate, (req, res) => {
 app.get("/api/v1/customers/sync/logs", async (req, res) => {
     try {
         const limit = parseInt(req.query.limit) || 10;
-        const rows = db.prepare(`
+        const rows = await sql`
             SELECT sync_name, source_company, target_company, created, updated, created_at
             FROM customer_sync_log
             ORDER BY created_at DESC
-            LIMIT ?
-        `).all(limit);
+            LIMIT ${limit}
+        `;
 
         res.json(rows);
     } catch (err) {
@@ -546,14 +447,14 @@ function toMappingView(row) {
     };
 }
 
-function readMappings() {
-    return db.prepare(`SELECT * FROM pricelist_map ORDER BY id`).all().map(toMappingView);
+async function readMappings() {
+    return (await sql`SELECT * FROM pricelist_map ORDER BY id`).map(toMappingView);
 }
 
 // GET the mapped source→target price-list pairs.
-app.get("/api/v1/pricelists/mappings", authenticate, (req, res) => {
+app.get("/api/v1/pricelists/mappings", authenticate, async (req, res) => {
     try {
-        res.json({ mappings: readMappings() });
+        res.json({ mappings: await readMappings() });
     } catch (err) {
         console.error("Error reading pricelist mappings:", err);
         res.status(500).json({ error: "Internal Server Error!" });
@@ -562,7 +463,7 @@ app.get("/api/v1/pricelists/mappings", authenticate, (req, res) => {
 
 // PUT replaces the whole mapping set in one transaction — the admin's mapping editor saves
 // the table as a unit, and a partial write would leave prices pointing at the wrong lists.
-app.put("/api/v1/pricelists/mappings", authenticate, (req, res) => {
+app.put("/api/v1/pricelists/mappings", authenticate, async (req, res) => {
     try {
         const incoming = req.body?.mappings;
         if (!Array.isArray(incoming)) {
@@ -614,27 +515,23 @@ app.put("/api/v1/pricelists/mappings", authenticate, (req, res) => {
             });
         }
 
-        const replace = db.transaction((rows) => {
-            db.prepare(`DELETE FROM pricelist_map`).run();
-            const insert = db.prepare(`
-                INSERT INTO pricelist_map
-                  (source_code, source_sales_purchase, source_title,
-                   target_code, target_sales_purchase, target_title,
-                   enabled, allow_unseen_target, max_change_pct, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            `);
-            for (const r of rows) {
-                insert.run(
-                    r.source_code, r.source_sales_purchase, r.source_title,
-                    r.target_code, r.target_sales_purchase, r.target_title,
-                    r.enabled, r.allow_unseen_target, r.max_change_pct
-                );
+        await sql.begin(async (tx) => {
+            await tx`DELETE FROM pricelist_map`;
+            for (const r of clean) {
+                await tx`
+                    INSERT INTO pricelist_map
+                      (source_code, source_sales_purchase, source_title,
+                       target_code, target_sales_purchase, target_title,
+                       enabled, allow_unseen_target, max_change_pct, updated_at)
+                    VALUES (${r.source_code}, ${r.source_sales_purchase}, ${r.source_title},
+                            ${r.target_code}, ${r.target_sales_purchase}, ${r.target_title},
+                            ${r.enabled}, ${r.allow_unseen_target}, ${r.max_change_pct}, now())
+                `;
             }
         });
-        replace(clean);
 
         console.log(`${logTs()} 🔗 pricelist mappings replaced — ${clean.length} pair(s), ${clean.filter(r => r.enabled).length} enabled.`);
-        res.json({ mappings: readMappings() });
+        res.json({ mappings: await readMappings() });
     } catch (err) {
         console.error("Error saving pricelist mappings:", err);
         res.status(500).json({ error: "Internal Server Error!" });
@@ -650,7 +547,7 @@ app.get("/api/v1/pricelists", authenticate, async (req, res) => {
     try {
         const fresh = req.query.refresh === "true" || req.query.refresh === "1";
         if (!fresh && PRICELIST_DISCOVERY_CACHE && Date.now() - PRICELIST_DISCOVERY_CACHE.at < PRICELIST_DISCOVERY_TTL_MS) {
-            return res.json({ ...PRICELIST_DISCOVERY_CACHE.value, cached: true, mappings: readMappings() });
+            return res.json({ ...PRICELIST_DISCOVERY_CACHE.value, cached: true, mappings: await readMappings() });
         }
 
         const [source, target] = await Promise.all([
@@ -666,7 +563,7 @@ app.get("/api/v1/pricelists", authenticate, async (req, res) => {
         };
         PRICELIST_DISCOVERY_CACHE = { at: Date.now(), value };
 
-        res.json({ ...value, cached: false, mappings: readMappings() });
+        res.json({ ...value, cached: false, mappings: await readMappings() });
     } catch (err) {
         console.error("Error discovering pricelists:", err);
         res.status(502).json({ error: err.message || "Could not read price lists from Metakocka" });
@@ -675,9 +572,9 @@ app.get("/api/v1/pricelists", authenticate, async (req, res) => {
 
 // POST triggers a pricelist sync. Background + recorded; 202 (or 409 if running).
 // ?dryRun=true resolves the whole plan WITHOUT writing anything to CREAGLOBE.
-app.post("/api/v1/pricelists/sync", authenticate, (req, res) => {
+app.post("/api/v1/pricelists/sync", authenticate, async (req, res) => {
     const dryRun = req.query.dryRun === "true" || req.query.dryRun === "1";
-    const r = runPricelistSync("manual", { dryRun });
+    const r = await runPricelistSync("manual", { dryRun });
     if (!r.started) {
         return res.status(409).json({ error: "A pricelist sync is already running." });
     }
@@ -687,12 +584,12 @@ app.post("/api/v1/pricelists/sync", authenticate, (req, res) => {
 app.get("/api/v1/pricelists/sync/logs", async (req, res) => {
     try {
         const limit = parseInt(req.query.limit) || 10;
-        const rows = db.prepare(`
+        const rows = await sql`
             SELECT sync_name, source_company, target_company, added, updated, created_at
             FROM pricelist_sync_log
             ORDER BY created_at DESC
-            LIMIT ?
-        `).all(limit);
+            LIMIT ${limit}
+        `;
 
         res.json(rows);
     } catch (err) {
@@ -755,8 +652,15 @@ app.get("/api/v1/schedules/pricelist-sync", async (req, res) => {
 
 // Unified status for the admin "Automation" page: both schedules, their next fire time,
 // whether a sync is currently running, and the last recorded run for each.
-app.get("/api/v1/status", authenticate, (req, res) => {
+app.get("/api/v1/status", authenticate, async (req, res) => {
     try {
+        const [warehouseLast, productsLast, customersLast, pricelistsLast, [{ n: mappingCount }]] = await Promise.all([
+            lastRunOf("warehouse"),
+            lastRunOf("products"),
+            lastRunOf("customers"),
+            lastRunOf("pricelists"),
+            sql`SELECT COUNT(*)::int AS n FROM pricelist_map WHERE enabled = 1`
+        ]);
         const cfg = readCronConfig();
         const warehouseCron = cfg.warehouseSync || loadCronExpression("warehouseSync");
         const productCron = cfg.productSync || "0 * * * *";
@@ -767,28 +671,28 @@ app.get("/api/v1/status", authenticate, (req, res) => {
                 schedule: warehouseCron,
                 nextRun: nextRunOf(warehouseCron),
                 isRunning: WAREHOUSE_RUNNING,
-                lastRun: lastRunOf("warehouse")
+                lastRun: warehouseLast
             },
             products: {
                 schedule: productCron,
                 nextRun: nextRunOf(productCron),
                 isRunning: PRODUCT_RUNNING,
-                lastRun: lastRunOf("products")
+                lastRun: productsLast
             },
             customers: {
                 schedule: customerCron,
                 nextRun: nextRunOf(customerCron),
                 isRunning: CUSTOMER_RUNNING,
-                lastRun: lastRunOf("customers")
+                lastRun: customersLast
             },
             pricelists: {
                 schedule: pricelistCron,
                 nextRun: nextRunOf(pricelistCron),
                 isRunning: PRICELIST_RUNNING,
-                lastRun: lastRunOf("pricelists"),
+                lastRun: pricelistsLast,
                 // Surfaced so the admin can say "nothing mapped yet" instead of showing a
                 // green, clean, entirely meaningless run.
-                mappingCount: db.prepare(`SELECT COUNT(*) AS n FROM pricelist_map WHERE enabled = 1`).get().n
+                mappingCount
             }
         });
     } catch (err) {
@@ -798,13 +702,13 @@ app.get("/api/v1/status", authenticate, (req, res) => {
 });
 
 // Recent run history. Optional ?type=warehouse|products and ?limit= (max 100).
-app.get("/api/v1/runs", authenticate, (req, res) => {
+app.get("/api/v1/runs", authenticate, async (req, res) => {
     try {
         const limit = Math.min(parseInt(req.query.limit) || 20, 100);
         const type = req.query.type;
         const rows = type
-            ? db.prepare(`SELECT * FROM sync_runs WHERE type = ? ORDER BY id DESC LIMIT ?`).all(type, limit)
-            : db.prepare(`SELECT * FROM sync_runs ORDER BY id DESC LIMIT ?`).all(limit);
+            ? await sql`SELECT * FROM sync_runs WHERE type = ${type} ORDER BY id DESC LIMIT ${limit}`
+            : await sql`SELECT * FROM sync_runs ORDER BY id DESC LIMIT ${limit}`;
         res.json(rows);
     } catch (err) {
         console.error("Error fetching runs:", err);
@@ -820,9 +724,20 @@ app.get("/api/v1/runs", authenticate, (req, res) => {
 app.use("/data", express.static(process.env.PUBLIC_DATA_FILE_PATH || "tmp"));
 app.use(express.static("public"));
 
-// Start server
-app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+// Before any cron can write: copy the old SQLite file in once, if Postgres is still empty.
+async function importOldSqlite() {
+    const r = await importSqlite(process.env.DB_FILE_PATH);
+    if (r.copied) {
+        console.log(`${logTs()} 🗄️  copied ${process.env.DB_FILE_PATH} into Postgres: ` +
+            r.counts.map((c) => `${c.table} ${c.postgres}`).join(", "));
+    } else if (process.env.DB_FILE_PATH) {
+        console.log(`${logTs()} 🗄️  SQLite copy skipped: ${r.reason}`);
+    }
+}
+
+migrate().then(importOldSqlite).then(boot).catch((err) => {
+    console.error(`${logTs()} ⛔ database not ready, exiting:`, err.message || err);
+    process.exit(1);
 });
 
 
@@ -873,20 +788,37 @@ function readCronConfig() {
     }
 }
 
-/** Inserts a 'running' run row and returns its id. */
-function recordRunStart(type, trigger) {
-    const info = db.prepare(
-        `INSERT INTO sync_runs (type, trigger, status, started_at) VALUES (?, ?, 'running', CURRENT_TIMESTAMP)`
-    ).run(type, trigger);
-    return info.lastInsertRowid;
+/**
+ * Inserts a 'running' run row and returns its id, or null if the database is unreachable.
+ * The run history is bookkeeping: a database outage must not stop the stock sync itself.
+ */
+async function recordRunStart(type, trigger) {
+    try {
+        const [{ id }] = await sql`
+            INSERT INTO sync_runs (type, trigger, status, started_at)
+            VALUES (${type}, ${trigger}, 'running', now())
+            RETURNING id`;
+        return id;
+    } catch (err) {
+        console.error(`${logTs()} ⚠️  could not record the start of a ${type} run:`, err.message || err);
+        return null;
+    }
 }
 
 /** Stamps a run row with its outcome, duration and (JSON) details. */
-function recordRunFinish(id, { status, itemCount = null, error = null, details = null, startedAtMs }) {
+async function recordRunFinish(id, { status, itemCount = null, error = null, details = null, startedAtMs }) {
     const durationMs = startedAtMs ? Date.now() - startedAtMs : null;
-    db.prepare(
-        `UPDATE sync_runs SET status = ?, item_count = ?, error = ?, details = ?, finished_at = CURRENT_TIMESTAMP, duration_ms = ? WHERE id = ?`
-    ).run(status, itemCount, error, details, durationMs, id);
+    if (id != null) {
+        try {
+            await sql`
+                UPDATE sync_runs
+                SET status = ${status}, item_count = ${itemCount}, error = ${error}, details = ${details},
+                    finished_at = now(), duration_ms = ${durationMs}
+                WHERE id = ${id}`;
+        } catch (err) {
+            console.error(`${logTs()} ⚠️  could not record the end of run #${id}:`, err.message || err);
+        }
+    }
     const icon = status === "ok" ? "✅" : status === "error" ? "❌" : "⏹";
     console.log(
         `${logTs()} ${icon} run #${id} finished: ${status}` +
@@ -897,11 +829,11 @@ function recordRunFinish(id, { status, itemCount = null, error = null, details =
 }
 
 /** Most recent run for a type (for the status endpoint), or null. */
-function lastRunOf(type) {
-    return db.prepare(
-        `SELECT id, type, trigger, status, item_count, error, details, started_at, finished_at, duration_ms
-         FROM sync_runs WHERE type = ? ORDER BY id DESC LIMIT 1`
-    ).get(type) || null;
+async function lastRunOf(type) {
+    const [row] = await sql`
+        SELECT id, type, trigger, status, item_count, error, details, started_at, finished_at, duration_ms
+        FROM sync_runs WHERE type = ${type} ORDER BY id DESC LIMIT 1`;
+    return row || null;
 }
 
 /** Total products touched by a product sync result (changes + new across both systems). */
@@ -917,14 +849,14 @@ function countProductChanges(result) {
  * outcome in sync_runs. Returns immediately: `{ started:true, runId }`, or
  * `{ started:false, reason:'already_running' }` when one is already in flight.
  */
-function runWarehouseSync(trigger) {
+async function runWarehouseSync(trigger) {
     if (WAREHOUSE_RUNNING) {
         console.warn(`${logTs()} ⏭  warehouse sync (${trigger}) skipped — already running.`);
         return { started: false, reason: "already_running" };
     }
     WAREHOUSE_RUNNING = true;
     const startedAtMs = Date.now();
-    const runId = recordRunStart("warehouse", trigger);
+    const runId = await recordRunStart("warehouse", trigger);
     console.log(`${logTs()} ▶️  warehouse sync started (${trigger}) — run #${runId}.`);
     (async () => {
         try {
@@ -949,7 +881,7 @@ function runWarehouseSync(trigger) {
                 errorCount: rawErrors.length,
                 errors
             });
-            recordRunFinish(runId, {
+            await recordRunFinish(runId, {
                 status: rawErrors.length > 0 ? "error" : "ok",
                 itemCount: b.total ?? result?.data?.length ?? null,
                 error: rawErrors.length > 0 ? `${rawErrors.length} product(s) failed to sync` : null,
@@ -957,7 +889,7 @@ function runWarehouseSync(trigger) {
                 startedAtMs
             });
         } catch (err) {
-            recordRunFinish(runId, { status: "error", error: err.message || String(err), startedAtMs });
+            await recordRunFinish(runId, { status: "error", error: err.message || String(err), startedAtMs });
         } finally {
             WAREHOUSE_RUNNING = false;
         }
@@ -968,14 +900,14 @@ function runWarehouseSync(trigger) {
 /**
  * Starts a product sync (scheduled or manual). Background + recorded like the warehouse one.
  */
-function runProductSync(trigger) {
+async function runProductSync(trigger) {
     if (PRODUCT_RUNNING) {
         console.warn(`${logTs()} ⏭  product sync (${trigger}) skipped — already running.`);
         return { started: false, reason: "already_running" };
     }
     PRODUCT_RUNNING = true;
     const startedAtMs = Date.now();
-    const runId = recordRunStart("products", trigger);
+    const runId = await recordRunStart("products", trigger);
     console.log(`${logTs()} ▶️  product sync started (${trigger}) — run #${runId}.`);
     (async () => {
         try {
@@ -1002,7 +934,7 @@ function runProductSync(trigger) {
             }));
             const details = JSON.stringify({ type: "products", buckets, errorCount: rawErrors.length, errors });
 
-            recordRunFinish(runId, {
+            await recordRunFinish(runId, {
                 status: result?.success === false ? "error" : "ok",
                 itemCount: countProductChanges(result),
                 error: result?.success === false ? `${rawErrors.length} item error(s)` : null,
@@ -1010,7 +942,7 @@ function runProductSync(trigger) {
                 startedAtMs
             });
         } catch (err) {
-            recordRunFinish(runId, { status: "error", error: err.message || String(err), startedAtMs });
+            await recordRunFinish(runId, { status: "error", error: err.message || String(err), startedAtMs });
         } finally {
             PRODUCT_RUNNING = false;
         }
@@ -1022,7 +954,7 @@ function runProductSync(trigger) {
  * Starts a customer (partner) sync — one-way T4A → CREAGLOBE, like products. Background +
  * recorded. `opts.dryRun` computes the plan without writing to CREAGLOBE. Returns immediately.
  */
-function runCustomerSync(trigger, opts = {}) {
+async function runCustomerSync(trigger, opts = {}) {
     if (CUSTOMER_RUNNING) {
         console.warn(`${logTs()} ⏭  customer sync (${trigger}) skipped — already running.`);
         return { started: false, reason: "already_running" };
@@ -1030,7 +962,7 @@ function runCustomerSync(trigger, opts = {}) {
     CUSTOMER_RUNNING = true;
     const dryRun = !!opts.dryRun;
     const startedAtMs = Date.now();
-    const runId = recordRunStart("customers", trigger);
+    const runId = await recordRunStart("customers", trigger);
     console.log(`${logTs()} ▶️  customer sync started (${trigger}${dryRun ? ", DRY RUN" : ""}) — run #${runId}.`);
     (async () => {
         try {
@@ -1075,7 +1007,7 @@ function runCustomerSync(trigger, opts = {}) {
                 errors
             });
 
-            recordRunFinish(runId, {
+            await recordRunFinish(runId, {
                 status: rawErrors.length > 0 ? "error" : "ok",
                 itemCount: (c.created ?? 0) + (c.updated ?? 0),
                 error: rawErrors.length > 0 ? `${rawErrors.length} customer(s) failed to sync` : null,
@@ -1083,7 +1015,7 @@ function runCustomerSync(trigger, opts = {}) {
                 startedAtMs
             });
         } catch (err) {
-            recordRunFinish(runId, { status: "error", error: err.message || String(err), startedAtMs });
+            await recordRunFinish(runId, { status: "error", error: err.message || String(err), startedAtMs });
         } finally {
             CUSTOMER_RUNNING = false;
         }
@@ -1098,7 +1030,7 @@ function runCustomerSync(trigger, opts = {}) {
  * Only the source→target list pairs saved in `pricelist_map` are synced: a price list's
  * count_code does not identify the same list across companies, so nothing is ever guessed.
  */
-function runPricelistSync(trigger, opts = {}) {
+async function runPricelistSync(trigger, opts = {}) {
     if (PRICELIST_RUNNING) {
         console.warn(`${logTs()} ⏭  pricelist sync (${trigger}) skipped — already running.`);
         return { started: false, reason: "already_running" };
@@ -1106,11 +1038,11 @@ function runPricelistSync(trigger, opts = {}) {
     PRICELIST_RUNNING = true;
     const dryRun = !!opts.dryRun;
     const startedAtMs = Date.now();
-    const runId = recordRunStart("pricelists", trigger);
+    const runId = await recordRunStart("pricelists", trigger);
     console.log(`${logTs()} ▶️  pricelist sync started (${trigger}${dryRun ? ", DRY RUN" : ""}) — run #${runId}.`);
     (async () => {
         try {
-            const mappings = readMappings();
+            const mappings = await readMappings();
             const result = await pricelistsSync({ dryRun, mappings });
             const c = result?.counts || {};
 
@@ -1160,7 +1092,7 @@ function runPricelistSync(trigger, opts = {}) {
                 errors
             });
 
-            recordRunFinish(runId, {
+            await recordRunFinish(runId, {
                 status: rawErrors.length > 0 ? "error" : "ok",
                 itemCount: (c.added ?? 0) + (c.updated ?? 0),
                 error: rawErrors.length > 0 ? `${rawErrors.length} price update(s) failed` : null,
@@ -1168,7 +1100,7 @@ function runPricelistSync(trigger, opts = {}) {
                 startedAtMs
             });
         } catch (err) {
-            recordRunFinish(runId, { status: "error", error: err.message || String(err), startedAtMs });
+            await recordRunFinish(runId, { status: "error", error: err.message || String(err), startedAtMs });
         } finally {
             PRICELIST_RUNNING = false;
         }
@@ -1517,10 +1449,10 @@ async function saveSyncFile(dataArray, fileTimestamp, syncName) {
         await fs.writeFile(filePath, JSON.stringify(dataArray, null, 2));
 
         // Insert into DB
-        db.prepare(`
-            INSERT INTO warehouse_sync_log (link, sync_name) 
-            VALUES (?, ?)
-        `).run(`${fileTimestamp}_${syncName}.json`, syncName);
+        await sql`
+            INSERT INTO warehouse_sync_log (link, sync_name)
+            VALUES (${`${fileTimestamp}_${syncName}.json`}, ${syncName})
+        `;
 
         console.log(`✅ Saved ${syncName} sync file: ${filePath}`);
     } catch (err) {
@@ -1540,16 +1472,16 @@ async function saveProductSyncFile(dataArray, fileTimestamp, sourceWarehouse, ta
         await fs.writeFile(filePath, JSON.stringify(dataArray, null, 2));
 
         // Insert a single log row for the whole sync
-        db.prepare(`
-            INSERT INTO product_sync_log 
-            (sync_name, status, source_warehouse, target_warehouse) 
-            VALUES (?, ?, ?, ?)
-        `).run(
-            `${fileTimestamp}_products_${sourceWarehouse}_to_${targetWarehouse}.json`,
-            status,
-            sourceWarehouse,
-            targetWarehouse
-        );
+        await sql`
+            INSERT INTO product_sync_log
+            (sync_name, status, source_warehouse, target_warehouse)
+            VALUES (
+                ${`${fileTimestamp}_products_${sourceWarehouse}_to_${targetWarehouse}.json`},
+                ${status ?? null},
+                ${sourceWarehouse},
+                ${targetWarehouse}
+            )
+        `;
 
         console.log(`✅ Saved product sync file: ${filePath}`);
     } catch (err) {
@@ -1569,11 +1501,11 @@ async function saveCustomerSyncFile(result, fileTimestamp, sourceCompany, target
         await fs.writeFile(filePath, JSON.stringify(result, null, 2));
 
         const c = result?.counts || {};
-        db.prepare(`
+        await sql`
             INSERT INTO customer_sync_log
             (sync_name, source_company, target_company, created, updated)
-            VALUES (?, ?, ?, ?, ?)
-        `).run(fileName, sourceCompany, targetCompany, c.created ?? 0, c.updated ?? 0);
+            VALUES (${fileName}, ${sourceCompany}, ${targetCompany}, ${c.created ?? 0}, ${c.updated ?? 0})
+        `;
 
         console.log(`✅ Saved customer sync file: ${filePath}`);
     } catch (err) {
@@ -1594,11 +1526,11 @@ async function savePricelistSyncFile(result, fileTimestamp, sourceCompany, targe
         await fs.writeFile(filePath, JSON.stringify(result, null, 2));
 
         const c = result?.counts || {};
-        db.prepare(`
+        await sql`
             INSERT INTO pricelist_sync_log
             (sync_name, source_company, target_company, added, updated)
-            VALUES (?, ?, ?, ?, ?)
-        `).run(fileName, sourceCompany, targetCompany, c.added ?? 0, c.updated ?? 0);
+            VALUES (${fileName}, ${sourceCompany}, ${targetCompany}, ${c.added ?? 0}, ${c.updated ?? 0})
+        `;
 
         console.log(`✅ Saved pricelist sync file: ${filePath}`);
     } catch (err) {

@@ -167,7 +167,7 @@ jobs:
             echo "running: ${PREV:-nothing}"
             echo "deploying: $NEW (commit $VERSION)"
 
-            # /healthz touches neither SQLite nor Metakocka, so their outages never cause a rollback.
+            # /healthz touches neither Postgres nor Metakocka, so their outages never cause a rollback.
             healthy() {
               for i in $(seq 1 30); do
                 curl -fsS http://127.0.0.1:${{ env.HOST_PORT }}/healthz >/dev/null && return 0

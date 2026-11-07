@@ -53,7 +53,7 @@ flowchart LR
 
     B -->|Success| E[BetterStack ✓]
     B -->|Failure| F[BetterStack ✗]
-    B --> G[Logs: JSON + SQLite]
+    B --> G[Logs: JSON + Postgres]
 
     classDef retired stroke-dasharray: 4 4,opacity:0.5;
 ```
@@ -65,7 +65,7 @@ flowchart LR
 
    * ✅ Success → base URL
    * ❌ Failure → base URL + `/fail`
-5. Store sync results in **JSON files + SQLite logs**.
+5. Store sync results in **JSON files + Postgres logs**.
 
 ---
 
@@ -201,7 +201,7 @@ x-api-key: <your-api-key>
   * Format: `{TIMESTAMP}_{SOURCE}.json`
   * Example: `20250903_141523001_T4A.json`
 
-* **SQLite DB** → stored in `./db/patrik.db` (or `DB_FILE_PATH`)
+* **Postgres** → `DATABASE_URL` (locally `docker compose up -d postgres`; schema in `src/db.js`)
 
   * Tables: `warehouse_sync_log`, `product_sync_log`, `customer_sync_log`,
     `pricelist_sync_log`, `pricelist_map` (the price-list pairs), and `sync_runs`
