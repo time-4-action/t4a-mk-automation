@@ -56,7 +56,7 @@ src/services/
   customerSyncService.js       partner matching, payload building, push
   pricelistSyncService.js      price-list discovery, mapping-driven price push
 public/                        the service's own tiny web dashboards (see §8)
-db/patrik.db                   SQLite (run history + per-sync logs)
+src/db.js                      Postgres connection + schema migrations (run history + per-sync logs)
 tmp/                           timestamped JSON result files, served at /data
 docs/                          Metakocka API reference + this project's own notes
 cron.json                      the live schedules (mutable at runtime)
@@ -66,9 +66,10 @@ cron.json                      the live schedules (mutable at runtime)
 
 `index.js` at startup:
 
-1. Opens SQLite (`DB_FILE_PATH`, default `./db/patrik.db`) and `CREATE TABLE IF
-   NOT EXISTS` for every table (§5), plus tolerated `ALTER TABLE` back-fills of
-   `sync_runs.details` and `pricelist_map.max_change_pct`.
+1. Connects to Postgres (`DATABASE_URL`) and applies pending migrations
+   (`src/db.js`, recorded in `schema_migrations`); exits if the database is
+   unreachable. Then, once, copies the old SQLite file (`DB_FILE_PATH`) in if every
+   table is still empty (`src/sqliteImport.js`). Only then does it go on.
 2. Reads `cron.json` and **starts all four cron jobs immediately**
    (`startOrUpdateWarehousesCron` / `…Products…` / `…Customers…` / `…Pricelists…`).
    Defaults if a key is missing: products `0 * * * *`, customers `0 */6 * * *`,
@@ -177,7 +178,7 @@ with `cron-validator`, persists it into `cron.json` (`CRON_FILE_PATH`), and
 re-arms the live `node-cron` job in place. Invalid expressions are rejected
 before anything is written.
 
-## 5. Data model (SQLite, `better-sqlite3`)
+## 5. Data model (Postgres, `postgres` driver; was SQLite until 2026-11)
 
 | Table | Row = | Columns |
 |---|---|---|
@@ -192,8 +193,9 @@ before anything is written.
 information** — the service tracks it itself. `nextRun` is derived from the cron
 expression via `cron-parser`; everything else comes from this table.
 
-Timestamps are SQLite `CURRENT_TIMESTAMP`, i.e. `"YYYY-MM-DD HH:MM:SS"` in **UTC
-without a zone marker**. Any consumer must normalise them to ISO before parsing
+Timestamps are stored as `timestamptz` but returned in the old SQLite
+`CURRENT_TIMESTAMP` format, i.e. `"YYYY-MM-DD HH:MM:SS"` in **UTC without a zone
+marker** (a type parser in `src/db.js`). Any consumer must normalise them to ISO before parsing
 (the admin does this in `parseSqlDate`).
 
 ### 5.1 The `details` JSON
@@ -848,7 +850,7 @@ sync by hand. In particular:
 
 - **`type` values** (`warehouse` | `products` | `customers`) key the schedule
   routes, the run filter and the per-page slices.
-- **Timestamps** are SQLite UTC strings without a zone; the admin's
+- **Timestamps** are UTC strings without a zone (the old SQLite format, kept on Postgres); the admin's
   `parseSqlDate` normalises them to ISO. Change the format and every date in the
   Automation section shifts by the local offset.
 - **`details` JSON** is the run-details view. A new field is additive and safe; a

@@ -12,12 +12,15 @@ services:
     # public way in is Traefik; Docker-published ports skip ufw, so never 0.0.0.0.
     ports:
       - "127.0.0.1:3000:3000"
-    # .env, cron.json, patrik.db and public/ live in ./data (see the Dockerfile ENVs).
+    # .env (with DATABASE_URL), cron.json and public/ live in ./data (see the Dockerfile ENVs);
+    # so does patrik.db, the old SQLite file, copied into Postgres once.
+    # Data: database `mk-automation` on t4a's shared Postgres (`postgres:5432`, `db` network).
     volumes:
       - ./data:/data
     mem_limit: 768m
     networks:
       - edge
+      - db
     labels:
       - traefik.enable=true
       - traefik.docker.network=edge
@@ -31,4 +34,6 @@ services:
 
 networks:
   edge:
+    external: true
+  db:
     external: true

@@ -54,12 +54,14 @@ the run. **verify** then requests `/healthz` on the public URL and requires
 (`development` / `production`). Only then is the image tagged — `:<sha>-verified`
 and `:dev` on dev, `:latest` in production.
 
-`/healthz` needs no API key and touches neither SQLite nor Metakocka, so an
-outage there never triggers a rollback.
+`/healthz` needs no API key and touches neither Postgres nor Metakocka, so an
+outage there never triggers a rollback. The app only listens once its database
+migrations ran, though: if Postgres is unreachable at boot it exits, `/healthz`
+never answers and the deploy rolls back.
 
-The deploy only swaps images. Everything mutable — `.env`, `cron.json`,
-`patrik.db`, `public/` — lives in the mounted `/data` directory and survives
-every deploy and rollback. The server copy of the compose file is
+The deploy only swaps images. The run history and price-list mappings live in
+Postgres (`DATABASE_URL`); the files — `.env`, `cron.json`, `public/` — live in the
+mounted `/data` directory. Both survive every deploy and rollback. The server copy of the compose file is
 `deploy/docker-compose.yml` (the root one is for local builds). To go back to an
 older release, re-run that commit's workflow, or on the server:
 `export APP_IMAGE=ghcr.io/time-4-action/t4a-mk-automation:<sha>-verified && docker compose up -d`
@@ -96,8 +98,10 @@ only (environment secrets win over the organization secrets of the same name):
 
 On t4a, `/srv/mk-automation` (owned by `deploy`) holds `docker-compose.yml`
 (= `deploy/docker-compose.t4a.yml`: Traefik labels for `mkauto.time-4-action.com`,
-loopback port 3000 for the health check) and `data/` (`.env`, `cron.json`,
-`patrik.db`, `public/`), mounted as `/data`. DNS: a proxied CNAME `mkauto` →
+loopback port 3000 for the health check, the `edge` and `db` networks) and `data/`
+(`.env`, `cron.json`, `public/`, and `patrik.db`, the old SQLite file), mounted as
+`/data`. The data is the database `mk-automation` on t4a's shared Postgres 18
+(t4a-infra `servers/t4a/README.md`, "Postgres"). DNS: a proxied CNAME `mkauto` →
 `production.time-4-action.com` in the `time-4-action.com` zone, which overrides the
 `*` wildcard that still points at t2.
 
@@ -111,6 +115,44 @@ is lost.
 
 Note: the app does not handle `SIGTERM`, so `docker compose stop` waits 10 s and
 kills it (exit 137). Stop it between syncs.
+
+## Moving from SQLite to Postgres (once)
+
+Up to this change the run history and the price-list mappings were in SQLite,
+`/data/patrik.db`. Now they are in Postgres. The first boot of the new image copies
+the file in by itself (`src/sqliteImport.js`): after the migrations and before
+any cron is scheduled, and only when every table in Postgres is still empty, all
+in one transaction, keeping the ids. The log line says what happened:
+`copied /data/patrik.db into Postgres: warehouse_sync_log …` or
+`SQLite copy skipped: …`. The file is opened read-only and stays where it is.
+
+Before merging the pull request, on t4a:
+
+1. `sudo sh /srv/postgres/new-app-db.sh mk-automation` and append the
+   `DATABASE_URL=…` line it prints to `/srv/mk-automation/data/.env` (mode 600;
+   never paste it anywhere else). Add `mk-automation` to `/srv/pghero/pghero.yml`.
+2. Copy `deploy/docker-compose.t4a.yml` to `/srv/mk-automation/docker-compose.yml`
+   (adds the `db` network). The running old image ignores both changes.
+3. Backup first: `cp -a data/patrik.db data/patrik.db.pre-postgres`.
+
+Then merge. The deploy starts the new image, it copies and starts the crons. Check:
+
+- `docker compose logs t4a-mk-automation | grep 🗄` shows `copied …` with the counts;
+- the counts match `sqlite3 data/patrik.db 'select count(*) from sync_runs'` (and
+  the other tables), or compare `/api/v1/runs` before and after;
+- the admin's Automation page shows the same history and mappings as before.
+
+To check a copy elsewhere first, `node scripts/sqlite-to-postgres.js <file>` does
+the same into any `DATABASE_URL` and prints a count table.
+
+Going back: re-deploy the previous image. It reads `patrik.db` again, which then
+misses the runs recorded in Postgres since the switch (history only; the syncs
+themselves are unaffected). Mapping changes made in the meantime would have to be
+entered again.
+
+After a week or so: remove `src/sqliteImport.js`, `scripts/sqlite-to-postgres.js`,
+the `better-sqlite3` dependency and `DB_FILE_PATH`, then delete `data/patrik.db`
+(the nightly restic backup of `/srv` keeps old copies).
 
 ## Server setup (once) — migrating from Docker Hub
 

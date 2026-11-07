@@ -9,6 +9,7 @@ WORKDIR /usr/src/app
 
 ENV ENV_FILE_PATH=/data/.env
 ENV CRON_FILE_PATH=/data/cron.json
+# The old SQLite file: copied into Postgres once at boot (src/sqliteImport.js), then unused.
 ENV DB_FILE_PATH=/data/patrik.db
 ENV PUBLIC_DATA_FILE_PATH=/data/public
 ENV NODE_ENV=production
@@ -27,6 +28,7 @@ COPY index.js .
 COPY src/ ./src/
 
 COPY cron.js .
+COPY scripts/ ./scripts/
 COPY config/ ./config/
 
 # The commit this image was built from. CI passes it; after a deploy the server
